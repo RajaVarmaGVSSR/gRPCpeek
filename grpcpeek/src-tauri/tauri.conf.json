@@ -1,0 +1,42 @@
+{
+  "build": {
+    "beforeDevCommand": "npm run dev --prefix ../frontend",
+    "beforeBuildCommand": "npm run build --prefix ../frontend",
+    "devPath": "http://localhost:1420",
+    "distDir": "../frontend/dist",
+    "withGlobalTauri": true
+  },
+  "package": {
+    "productName": "grpcpeek",
+    "version": "0.1.0"
+  },
+  "tauri": {
+    "allowlist": {
+      "all": false,
+      "shell": {
+        "all": false,
+        "open": true
+      }
+    },
+    "bundle": {
+      "active": false,
+      "targets": "all",
+      "identifier": "com.tauri.grpcpeek",
+      "icon": [
+        "icons/icon.png"
+      ]
+    },
+    "security": {
+      "csp": null
+    },
+    "windows": [
+      {
+        "fullscreen": false,
+        "resizable": true,
+        "title": "gRPCpeek",
+        "width": 800,
+        "height": 600
+      }
+    ]
+  }
+}

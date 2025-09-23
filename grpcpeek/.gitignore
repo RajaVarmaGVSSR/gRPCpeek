@@ -1,0 +1,10 @@
+# Rust / Cargo
+target/
+Cargo.lock
+
+# Frontend / Node
+frontend/node_modules/
+frontend/dist/
+
+# macOS
+.DS_Store
