@@ -1,0 +1,31 @@
+# General
+.DS_Store
+Thumbs.db
+*.log
+
+# Node / Frontend artifacts
+**/node_modules/
+**/dist/
+**/build/
+**/.vite/
+**/.parcel-cache/
+
+# Rust / Cargo artifacts
+**/target/
+**/.cargo/
+**/.rustup/
+**/*.rs.bk
+
+# Tauri specific
+grpcpeek/src-tauri/target/
+grpcpeek/src-tauri/target/**
+grpcpeek/src-tauri/gen/
+
+# Proto / tooling temp files
+**/CACHEDIR.TAG
+**/.cache/
+
+# Editor / OS
+.vscode/
+.idea/
+*.swp
