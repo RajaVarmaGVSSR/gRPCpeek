@@ -1,0 +1,115 @@
+syntax = "proto3";
+
+package test;
+
+option java_multiple_files = true;
+option java_package = "com.example.test";
+option java_outer_classname = "TestProto";
+
+// Hello service - simple unary call
+service HelloService {
+  rpc SayHello (HelloRequest) returns (HelloResponse);
+  rpc SayHelloStream (HelloRequest) returns (stream HelloResponse);
+}
+
+// User service - CRUD operations
+service UserService {
+  rpc CreateUser (CreateUserRequest) returns (UserResponse);
+  rpc GetUser (GetUserRequest) returns (UserResponse);
+  rpc ListUsers (ListUsersRequest) returns (stream UserResponse);
+  rpc UpdateUser (UpdateUserRequest) returns (UserResponse);
+  rpc DeleteUser (DeleteUserRequest) returns (DeleteResponse);
+}
+
+// Chat service - bidirectional streaming
+service ChatService {
+  rpc Chat (stream ChatMessage) returns (stream ChatMessage);
+}
+
+// Echo service - for testing different message types
+service EchoService {
+  rpc Echo (EchoRequest) returns (EchoResponse);
+  rpc EchoStream (stream EchoRequest) returns (stream EchoResponse);
+}
+
+// Message definitions
+message HelloRequest {
+  string name = 1;
+  string language = 2;
+}
+
+message HelloResponse {
+  string message = 1;
+  string timestamp = 2;
+  string server_version = 3;
+}
+
+message CreateUserRequest {
+  string name = 1;
+  string email = 2;
+  int32 age = 3;
+}
+
+message GetUserRequest {
+  string id = 1;
+}
+
+message ListUsersRequest {
+  int32 page = 1;
+  int32 page_size = 2;
+}
+
+message UpdateUserRequest {
+  string id = 1;
+  string name = 2;
+  string email = 3;
+  int32 age = 4;
+}
+
+message DeleteUserRequest {
+  string id = 1;
+}
+
+message UserResponse {
+  string id = 1;
+  string name = 2;
+  string email = 3;
+  int32 age = 4;
+  string created_at = 5;
+  string updated_at = 6;
+}
+
+message DeleteResponse {
+  bool success = 1;
+  string message = 2;
+}
+
+message ChatMessage {
+  string user_id = 1;
+  string message = 2;
+  string timestamp = 3;
+  string room_id = 4;
+}
+
+message EchoRequest {
+  oneof payload {
+    string text = 1;
+    int32 number = 2;
+    bool flag = 3;
+    bytes data = 4;
+  }
+  repeated string items = 5;
+  map<string, string> metadata = 6;
+}
+
+message EchoResponse {
+  oneof payload {
+    string text = 1;
+    int32 number = 2;
+    bool flag = 3;
+    bytes data = 4;
+  }
+  repeated string items = 5;
+  map<string, string> metadata = 6;
+  string echoed_at = 7;
+}
