@@ -44,7 +44,7 @@ const helloService = {
 
     let count = 0;
     const interval = setInterval(() => {
-      if (count >= 5) {
+      if (count >= 20) {
         clearInterval(interval);
         call.end();
         return;
@@ -56,7 +56,7 @@ const helloService = {
         server_version: '1.0.0',
       });
       count++;
-    }, 1000);
+    }, 200); // Also reduced interval to 200ms for faster streaming
   },
 };
 
