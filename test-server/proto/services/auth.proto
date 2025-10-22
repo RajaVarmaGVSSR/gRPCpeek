@@ -1,0 +1,73 @@
+syntax = "proto3";
+
+package services;
+
+option java_multiple_files = true;
+option java_package = "com.example.services";
+
+// Authentication and authorization service
+service AuthService {
+  // Unary - Login
+  rpc Login (LoginRequest) returns (LoginResponse);
+  
+  // Unary - Logout
+  rpc Logout (LogoutRequest) returns (LogoutResponse);
+  
+  // Unary - Refresh token
+  rpc RefreshToken (RefreshTokenRequest) returns (TokenResponse);
+  
+  // Unary - Validate token
+  rpc ValidateToken (ValidateTokenRequest) returns (ValidationResponse);
+}
+
+message LoginRequest {
+  string username = 1;
+  string password = 2;
+  string device_id = 3;
+}
+
+message LoginResponse {
+  bool success = 1;
+  string access_token = 2;
+  string refresh_token = 3;
+  int64 expires_in = 4;
+  UserInfo user = 5;
+  string message = 6;
+}
+
+message UserInfo {
+  string id = 1;
+  string username = 2;
+  string email = 3;
+  repeated string roles = 4;
+}
+
+message LogoutRequest {
+  string access_token = 1;
+}
+
+message LogoutResponse {
+  bool success = 1;
+  string message = 2;
+}
+
+message RefreshTokenRequest {
+  string refresh_token = 1;
+}
+
+message TokenResponse {
+  string access_token = 1;
+  string refresh_token = 2;
+  int64 expires_in = 3;
+}
+
+message ValidateTokenRequest {
+  string token = 1;
+}
+
+message ValidationResponse {
+  bool valid = 1;
+  string user_id = 2;
+  repeated string roles = 3;
+  int64 expires_at = 4;
+}

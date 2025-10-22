@@ -1,0 +1,37 @@
+syntax = "proto3";
+
+package models;
+
+import "common/types.proto";
+
+option java_multiple_files = true;
+option java_package = "com.example.models";
+
+message User {
+  string id = 1;
+  string name = 2;
+  string email = 3;
+  int32 age = 4;
+  UserStatus status = 5;
+  common.Address address = 6;
+  string created_at = 7;
+  string updated_at = 8;
+  repeated string roles = 9;
+  map<string, string> preferences = 10;
+}
+
+enum UserStatus {
+  USER_STATUS_UNSPECIFIED = 0;
+  ACTIVE = 1;
+  INACTIVE = 2;
+  SUSPENDED = 3;
+  DELETED = 4;
+}
+
+message UserProfile {
+  string user_id = 1;
+  string bio = 2;
+  string avatar_url = 3;
+  string website = 4;
+  repeated string social_links = 5;
+}

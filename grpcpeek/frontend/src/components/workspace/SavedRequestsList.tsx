@@ -15,11 +15,16 @@ export function SavedRequestsList({
   if (requests.length === 0) {
     return (
       <Card className="p-6">
-        <div className="space-y-2 text-center">
-          <div className="text-2xl">⭐</div>
-          <p className="text-sm text-muted-foreground">
-            No saved requests yet. Execute a request and click "Save" to add it here.
-          </p>
+        <div className="space-y-3 text-center">
+          <div className="text-3xl">💾</div>
+          <div className="space-y-1">
+            <p className="text-sm font-medium text-foreground">
+              No saved requests yet
+            </p>
+            <p className="text-xs text-muted-foreground">
+              Execute a request and click "Save" to add it to your collections.
+            </p>
+          </div>
         </div>
       </Card>
     )
@@ -41,7 +46,7 @@ export function SavedRequestsList({
               {request.service}.{request.method}
             </div>
             <div className="text-xs text-muted-foreground/70">
-              {new Date(request.timestamp).toLocaleString()}
+              {new Date(request.createdAt).toLocaleString()}
             </div>
           </button>
           <IconButton

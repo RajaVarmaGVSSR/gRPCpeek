@@ -1,0 +1,39 @@
+syntax = "proto3";
+
+package services;
+
+option java_multiple_files = true;
+option java_package = "com.example.services";
+
+// Simple unary service for testing basic request/response
+service HelloService {
+  // Unary call - single request, single response
+  rpc SayHello (HelloRequest) returns (HelloResponse);
+  
+  // Server streaming - single request, stream of responses
+  rpc SayHelloServerStream (HelloRequest) returns (stream HelloResponse);
+  
+  // Multiple greetings in different languages
+  rpc SayMultipleHellos (MultipleHelloRequest) returns (MultipleHelloResponse);
+}
+
+message HelloRequest {
+  string name = 1;
+  string language = 2; // en, es, fr, de, etc.
+}
+
+message HelloResponse {
+  string message = 1;
+  string timestamp = 2;
+  string server_version = 3;
+  string language = 4;
+}
+
+message MultipleHelloRequest {
+  string name = 1;
+  repeated string languages = 2;
+}
+
+message MultipleHelloResponse {
+  repeated HelloResponse greetings = 1;
+}

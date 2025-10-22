@@ -31,7 +31,18 @@
       }
     ],
     "security": {
-      "csp": null
+      "csp": null,
+      "capabilities": [
+        {
+          "identifier": "main-capability",
+          "description": "Main application capabilities",
+          "windows": ["main"],
+          "permissions": [
+            "dialog:allow-open",
+            "dialog:allow-save"
+          ]
+        }
+      ]
     }
   }
 }

@@ -11,20 +11,55 @@ Our goal is to deliver a Postman-class workflow for gRPC without the bloat:
 
 ## Current Features
 
-- **Cross-platform desktop shell** powered by Tauri with Rust async runtime (`tokio`).
-- **Proto import & request execution** using the `tonic` gRPC stack—load a proto, invoke RPCs, and inspect responses.
-- **React/Vite frontend** scaffolded with Tailwind CSS for rapid UI iteration.
-- **Unified dev workflow** via `cargo tauri dev`, coordinating the frontend dev server and the native shell with hot reload.
+### Core Functionality ✅
+- **Cross-platform desktop shell** powered by Tauri with Rust async runtime (`tokio`)
+- **Proto import & request execution** using the `tonic` gRPC stack—load a proto, invoke RPCs, and inspect responses
+- **React/Vite frontend** with modern TypeScript and Tailwind CSS for rapid UI development
+- **Unified dev workflow** via `cargo tauri dev`, coordinating the frontend dev server and native shell with hot reload
+
+### Phase 3: Professional UI ✅ (Complete)
+- **Modern Design System**: Minimalist aesthetic with custom color tokens and CSS variables
+- **Workspace Management**: Multi-environment support with host/port configuration
+- **Request Tabs**: Multi-tab interface for parallel testing
+- **Service Browser**: Collapsible tree view with method type badges
+- **Request/Response Panels**: Side-by-side split view with JSON editors
+- **Streaming Support**: Real-time server streaming message display
+- **Global Variables**: Workspace-level key-value pairs
+- **Request History**: Automatic tracking of all requests
+- **Collections**: Save and organize requests
+- **Keyboard Shortcuts**: Ctrl+Enter, Ctrl+S, Ctrl+W, Ctrl+Tab, etc.
+- **Bundle Size**: 203.57 KB (59.99 KB gzipped)
+
+### Phase 4: UX Enhancements ✅ (Complete)
+- **Toast Notifications**: Instant feedback for all actions (copy, save, errors)
+- **Command Palette**: Ctrl+K quick navigation with fuzzy search
+- **Enhanced Animations**: Smooth transitions, button effects, modal entrance animations
+- **Loading Skeletons**: Professional loading states for services and responses
+- **Responsive Design**: Mobile-first layout with hamburger menu and collapsible sidebar
+- **User Settings**: Customizable theme (light/dark/auto), font size, compact mode
+- **Settings Persistence**: All preferences saved to localStorage
+- **Bundle Size**: 219.09 KB (63.65 KB gzipped)
+
+**Total Features**: 25+ implemented features across UI, UX, and backend integration
 
 ## Roadmap / Upcoming Features
 
-- **Proto workspace roots** to resolve imports recursively and auto-discover services/methods.
-- **Environment profiles** for managing multiple endpoints with host/IP, port, TLS, and default metadata.
-- **Request metadata management** supporting default headers/trailers per environment with per-request overrides.
-- **History & collections** to group requests, replay them, and share configurations.
-- **Export/Import tooling** for collaboration and backup.
+### Phase 5: Advanced Features (Planned)
+- **Drag & Drop**: Intuitive proto file upload and request organization
+- **Syntax Highlighting**: Code highlighting for JSON request/response bodies
+- **Auto-complete**: IntelliSense for message types in request editor
+- **Collections UI**: Visual folder management for saved requests
+- **Export/Import**: Share workspaces and collections between team members
+- **Request Diffing**: Compare requests side-by-side
 
-Track progress or propose additions through issues and discussions.
+### Backend Enhancements (Planned)
+- **Proto workspace roots** to resolve imports recursively and auto-discover services/methods
+- **TLS/SSL Support**: Certificate handling for secure connections
+- **Advanced Auth**: OAuth, JWT, API keys
+- **Connection Pooling**: Efficient connection management
+- **Streaming Improvements**: Client and bidirectional streaming support
+
+Track progress or propose additions through issues and discussions. See `PHASE4_COMPLETE.md` and `PHASE4_SUMMARY.md` for detailed completion reports.
 
 ## Repository Layout
 

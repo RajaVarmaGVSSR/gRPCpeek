@@ -1,6 +1,8 @@
 // Prevents additional console window on Windows in release, DO NOT REMOVE!!
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod proto_parser;
+
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -11,6 +13,11 @@ use tempfile::NamedTempFile;
 use std::io::Write;
 use prost_reflect::{DescriptorPool, DynamicMessage};
 use prost::Message;
+use std::sync::Arc;
+use rustls::{Certificate, PrivateKey};
+use rustls_pemfile::{certs, pkcs8_private_keys};
+use std::io::BufReader;
+use base64::{Engine as _, engine::general_purpose};
 
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -30,61 +37,128 @@ pub struct MethodInfo {
     pub method_type: String,
 }
 
+#[derive(Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct TlsConfig {
+    pub enabled: bool,
+    pub client_cert_path: Option<String>,
+    pub client_key_path: Option<String>,
+    pub server_ca_cert_path: Option<String>,
+    pub insecure_skip_verify: Option<bool>,
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct AuthConfig {
+    #[serde(rename = "type")]
+    pub auth_type: String,  // 'none' | 'bearer' | 'basic' | 'apiKey'
+    pub token: Option<String>,  // For bearer
+    pub username: Option<String>,  // For basic
+    pub password: Option<String>,  // For basic
+    pub key: Option<String>,  // For API key header name
+    pub value: Option<String>,  // For API key value
+}
+
+fn load_certificates_from_file(path: &str) -> Result<Vec<Certificate>, String> {
+    let cert_file = std::fs::File::open(path)
+        .map_err(|e| format!("Failed to open certificate file '{}': {}", path, e))?;
+    let mut reader = BufReader::new(cert_file);
+    
+    let certs_result = certs(&mut reader)
+        .map_err(|e| format!("Failed to parse certificates from '{}': {}", path, e))?;
+    
+    Ok(certs_result.into_iter().map(Certificate).collect())
+}
+
+fn load_private_key_from_file(path: &str) -> Result<PrivateKey, String> {
+    let key_file = std::fs::File::open(path)
+        .map_err(|e| format!("Failed to open private key file '{}': {}", path, e))?;
+    let mut reader = BufReader::new(key_file);
+    
+    let keys = pkcs8_private_keys(&mut reader)
+        .map_err(|e| format!("Failed to parse private key from '{}': {}", path, e))?;
+    
+    keys.into_iter()
+        .next()
+        .map(PrivateKey)
+        .ok_or_else(|| format!("No private key found in '{}'", path))
+}
+
+// Custom certificate verifier that skips all verification (INSECURE - for dev only!)
+struct NoCertificateVerification;
+
+impl rustls::client::ServerCertVerifier for NoCertificateVerification {
+    fn verify_server_cert(
+        &self,
+        _end_entity: &rustls::Certificate,
+        _intermediates: &[rustls::Certificate],
+        _server_name: &rustls::ServerName,
+        _scts: &mut dyn Iterator<Item = &[u8]>,
+        _ocsp_response: &[u8],
+        _now: std::time::SystemTime,
+    ) -> Result<rustls::client::ServerCertVerified, rustls::Error> {
+        // Skip all verification - INSECURE!
+        Ok(rustls::client::ServerCertVerified::assertion())
+    }
+}
+
 #[tauri::command]
 async fn parse_proto_file(proto_content: String) -> Result<Vec<ServiceInfo>, String> {
-    // Parse proto file using regex to extract services and methods
     let mut services = Vec::new();
-    
-    // Regex to match service blocks: service ServiceName { ... }
+
     let service_re = Regex::new(r"service\s+(\w+)\s*\{([^}]*(?:\{[^}]*\}[^}]*)*)\}")
         .map_err(|e| format!("Failed to compile service regex: {}", e))?;
-    
-    // Regex to match rpc methods with optional stream keywords
-    // Captures: method_name, (stream)?, input_type, (stream)?, output_type
-    let rpc_re = Regex::new(r"rpc\s+(\w+)\s*\(\s*(stream\s+)?([A-Za-z0-9_.]+)\s*\)\s+returns\s*\(\s*(stream\s+)?([A-Za-z0-9_.]+)\s*\)")
-        .map_err(|e| format!("Failed to compile rpc regex: {}", e))?;
-    
-    // Find all services
+
+    let rpc_re = Regex::new(
+        r"rpc\s+(\w+)\s*\(\s*(stream\s+)?([A-Za-z0-9_.]+)\s*\)\s+returns\s*\(\s*(stream\s+)?([A-Za-z0-9_.]+)\s*\)"
+    )
+    .map_err(|e| format!("Failed to compile rpc regex: {}", e))?;
+
     for service_cap in service_re.captures_iter(&proto_content) {
-        let service_name = service_cap.get(1)
+        let service_name = service_cap
+            .get(1)
             .ok_or("Failed to extract service name")?
             .as_str()
             .to_string();
-        
-        let service_body = service_cap.get(2)
+
+        let service_body = service_cap
+            .get(2)
             .ok_or("Failed to extract service body")?
             .as_str();
-        
+
         let mut methods = Vec::new();
-        
-        // Find all RPC methods in this service
+
         for rpc_cap in rpc_re.captures_iter(service_body) {
-            let method_name = rpc_cap.get(1)
+            let method_name = rpc_cap
+                .get(1)
                 .ok_or("Failed to extract method name")?
                 .as_str()
                 .to_string();
-            
+
             let is_client_streaming = rpc_cap.get(2).is_some();
-            
-            let input_type = rpc_cap.get(3)
+
+            let input_type = rpc_cap
+                .get(3)
                 .ok_or("Failed to extract input type")?
                 .as_str()
                 .to_string();
-            
+
             let is_server_streaming = rpc_cap.get(4).is_some();
-            
-            let output_type = rpc_cap.get(5)
+
+            let output_type = rpc_cap
+                .get(5)
                 .ok_or("Failed to extract output type")?
                 .as_str()
                 .to_string();
-            
+
             let method_type = match (is_client_streaming, is_server_streaming) {
                 (false, false) => "unary",
                 (false, true) => "server_streaming",
                 (true, false) => "client_streaming",
                 (true, true) => "bidirectional_streaming",
-            }.to_string();
-            
+            }
+            .to_string();
+
             methods.push(MethodInfo {
                 name: method_name,
                 input_type,
@@ -94,17 +168,14 @@ async fn parse_proto_file(proto_content: String) -> Result<Vec<ServiceInfo>, Str
                 method_type,
             });
         }
-        
-        services.push(ServiceInfo {
-            name: service_name,
-            methods,
-        });
+
+        services.push(ServiceInfo { name: service_name, methods });
     }
-    
+
     if services.is_empty() {
         return Err("No services found in proto file".to_string());
     }
-    
+
     Ok(services)
 }
 
@@ -195,7 +266,11 @@ async fn call_grpc_method(
     method: String,
     request_data: String,
     endpoint: String,
-    proto_content: String,
+    proto_content: Option<String>,
+    import_paths: Option<Vec<proto_parser::ImportPath>>,
+    metadata: Option<std::collections::HashMap<String, String>>,
+    auth: Option<AuthConfig>,
+    tls_config: Option<TlsConfig>,
 ) -> Result<String, String> {
     let request_json: Value = serde_json::from_str(&request_data)
         .map_err(|e| format!("Failed to parse request JSON: {}", e))?;
@@ -205,14 +280,26 @@ async fn call_grpc_method(
         .trim_start_matches("https://")
         .to_string();
 
-    // Extract package name from proto file
-    let package_re = Regex::new(r"package\s+([A-Za-z0-9_.]+)\s*;")
-        .map_err(|e| format!("Failed to compile package regex: {}", e))?;
+    // Compile proto files to get descriptor pool
+    let descriptor_pool = if let Some(paths) = import_paths {
+        // Use import paths to compile protos
+        proto_parser::compile_proto_from_paths(paths)
+            .map_err(|e| format!("Failed to compile protos from import paths: {}", e))?
+    } else if let Some(content) = proto_content {
+        // Use proto content (legacy single-file approach)
+        compile_proto_to_descriptors(&content)
+            .map_err(|e| format!("Failed to compile proto: {}", e))?
+    } else {
+        return Err("Either proto_content or import_paths must be provided".to_string());
+    };
 
-    let package_name = package_re.captures(&proto_content)
-        .and_then(|cap| cap.get(1))
-        .map(|m| m.as_str())
-        .unwrap_or("");
+    // Extract package name from the first service found
+    let first_service = descriptor_pool
+        .services()
+        .next()
+        .ok_or_else(|| "No services found in proto".to_string())?;
+    
+    let package_name = first_service.parent_file().package_name().to_string();
 
     // Build the gRPC path: /package.ServiceName/MethodName
     let grpc_path = if !package_name.is_empty() {
@@ -220,10 +307,6 @@ async fn call_grpc_method(
     } else {
         format!("/{}/{}", service, method)
     };
-
-    // Compile proto file to FileDescriptorSet using protoc
-    let descriptor_pool = compile_proto_to_descriptors(&proto_content)
-        .map_err(|e| format!("Failed to compile proto: {}", e))?;
 
     // Find the service and method descriptors
     let service_desc = descriptor_pool
@@ -257,22 +340,124 @@ async fn call_grpc_method(
     request_body.extend_from_slice(&(protobuf_bytes.len() as u32).to_be_bytes());
     request_body.extend_from_slice(&protobuf_bytes);
 
+    // Determine if TLS is enabled
+    let use_tls = tls_config.as_ref().map(|c| c.enabled).unwrap_or(false);
+    let scheme = if use_tls { "https" } else { "http" };
+    
     // Build HTTP/2 request
-    let uri: Uri = format!("http://{}{}", clean_endpoint, grpc_path)
+    let uri: Uri = format!("{}://{}{}", scheme, clean_endpoint, grpc_path)
         .parse()
         .map_err(|e| format!("Invalid URI: {}", e))?;
 
-    let req = HttpRequest::builder()
+    let mut req_builder = HttpRequest::builder()
         .method("POST")
         .uri(uri)
         .header("content-type", "application/grpc")
-        .header("te", "trailers")
+        .header("te", "trailers");
+    
+    // Add authentication headers
+    if let Some(auth_config) = auth {
+        match auth_config.auth_type.as_str() {
+            "bearer" => {
+                if let Some(token) = auth_config.token {
+                    req_builder = req_builder.header("authorization", format!("Bearer {}", token));
+                }
+            }
+            "basic" => {
+                if let (Some(username), Some(password)) = (auth_config.username, auth_config.password) {
+                    let credentials = format!("{}:{}", username, password);
+                    let encoded = general_purpose::STANDARD.encode(credentials.as_bytes());
+                    req_builder = req_builder.header("authorization", format!("Basic {}", encoded));
+                }
+            }
+            "apiKey" => {
+                if let (Some(key), Some(value)) = (auth_config.key, auth_config.value) {
+                    req_builder = req_builder.header(key, value);
+                }
+            }
+            _ => {} // "none" or unknown types - no auth header
+        }
+    }
+    
+    // Add custom metadata headers
+    if let Some(meta) = metadata {
+        for (key, value) in meta {
+            req_builder = req_builder.header(key, value);
+        }
+    }
+    
+    let req = req_builder
         .body(Body::from(request_body))
         .map_err(|e| format!("Failed to build request: {}", e))?;
 
+    // Create HTTP client with or without TLS
+    let https_connector = if use_tls {
+        let tls_cfg = tls_config.as_ref().unwrap();
+        
+        // Build TLS configuration
+        let mut root_store = rustls::RootCertStore::empty();
+        
+        // Load CA certificates
+        if let Some(ca_path) = &tls_cfg.server_ca_cert_path {
+            let ca_certs = load_certificates_from_file(ca_path)?;
+            for cert in ca_certs {
+                root_store.add(&cert)
+                    .map_err(|e| format!("Failed to add CA certificate: {}", e))?;
+            }
+        } else {
+            // Use system root certificates
+            root_store.add_trust_anchors(
+                webpki_roots::TLS_SERVER_ROOTS.iter().map(|ta| {
+                    rustls::OwnedTrustAnchor::from_subject_spki_name_constraints(
+                        ta.subject.to_vec(),
+                        ta.spki.to_vec(),
+                        ta.name_constraints.as_ref().map(|nc| nc.to_vec()),
+                    )
+                })
+            );
+        }
+        
+        let config_builder = rustls::ClientConfig::builder()
+            .with_safe_defaults()
+            .with_root_certificates(root_store);
+        
+        // Handle client certificates (mTLS)
+        let client_config = if let (Some(cert_path), Some(key_path)) = (&tls_cfg.client_cert_path, &tls_cfg.client_key_path) {
+            let client_certs = load_certificates_from_file(cert_path)?;
+            let client_key = load_private_key_from_file(key_path)?;
+            
+            config_builder.with_client_auth_cert(client_certs, client_key)
+                .map_err(|e| format!("Failed to configure client authentication: {}", e))?
+        } else {
+            config_builder.with_no_client_auth()
+        };
+        
+        // Handle insecure skip verify
+        let final_config = if tls_cfg.insecure_skip_verify.unwrap_or(false) {
+            let mut config = client_config;
+            config.dangerous().set_certificate_verifier(Arc::new(NoCertificateVerification));
+            config
+        } else {
+            client_config
+        };
+        
+        hyper_rustls::HttpsConnectorBuilder::new()
+            .with_tls_config(final_config)
+            .https_or_http()
+            .enable_http2()
+            .build()
+    } else {
+        // For non-TLS, still use HttpsConnector but with native roots
+        hyper_rustls::HttpsConnectorBuilder::new()
+            .with_native_roots()
+            .https_or_http()
+            .enable_http2()
+            .build()
+    };
+
     let client = Client::builder()
         .http2_only(true)
-        .build_http();
+        .build::<_, Body>(https_connector);
 
     let response = client
         .request(req)
@@ -462,12 +647,20 @@ async fn generate_sample_request(message_type: String, proto_content: String) ->
         .map_err(|e| format!("Failed to serialize JSON: {}", e))
 }
 
+/// New multi-phase proto parser with import resolution
+#[tauri::command]
+fn parse_proto_files(import_paths: Vec<proto_parser::ImportPath>) -> proto_parser::ProtoParseResult {
+    proto_parser::parse_proto_files(import_paths)
+}
+
 fn main() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_dialog::init())
         .invoke_handler(tauri::generate_handler![
             parse_proto_file,
             call_grpc_method,
-            generate_sample_request
+            generate_sample_request,
+            parse_proto_files
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

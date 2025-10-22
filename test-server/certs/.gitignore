@@ -1,0 +1,15 @@
+# Ignore all generated certificates and keys
+# These should be generated locally using generate-certs.sh or generate-certs.bat
+
+*.pem
+*.crt
+*.key
+*.csr
+*.srl
+*.cnf
+
+# Only keep the generation scripts and documentation
+!generate-certs.sh
+!generate-certs.bat
+!README.md
+!.gitignore

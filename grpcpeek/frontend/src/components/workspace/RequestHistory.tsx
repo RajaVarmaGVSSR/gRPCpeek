@@ -1,9 +1,9 @@
-import type { SavedRequest } from '../../types/workspace'
+import type { HistoryEntry } from '../../types/workspace'
 import { Card } from '../ui'
 
 interface RequestHistoryProps {
-  history: SavedRequest[]
-  onRequestClick: (request: SavedRequest) => void
+  history: HistoryEntry[]
+  onRequestClick: (request: HistoryEntry) => void
 }
 
 export function RequestHistory({ history, onRequestClick }: RequestHistoryProps) {
@@ -22,23 +22,26 @@ export function RequestHistory({ history, onRequestClick }: RequestHistoryProps)
 
   return (
     <div className="space-y-2">
-      {history.map((request) => (
-        <button
-          key={request.id}
-          onClick={() => onRequestClick(request)}
-          className="flex w-full flex-col items-start gap-1 rounded-xl border border-border/70 bg-surface p-3 text-left transition-colors hover:border-focus/60 hover:bg-surface-muted/40"
-        >
-          <div className="flex w-full items-center justify-between gap-2">
-            <div className="text-sm font-medium text-foreground">{request.name}</div>
-            <div className="text-xs text-muted-foreground/70">
-              {new Date(request.timestamp).toLocaleTimeString()}
+      {history.map((entry) => {
+        const displayName = `${entry.service}.${entry.method}`
+        return (
+          <button
+            key={entry.id}
+            onClick={() => onRequestClick(entry)}
+            className="flex w-full flex-col items-start gap-1 rounded-xl border border-border/70 bg-surface p-3 text-left transition-colors hover:border-focus/60 hover:bg-surface-muted/40"
+          >
+            <div className="flex w-full items-center justify-between gap-2">
+              <div className="text-sm font-medium text-foreground">{displayName}</div>
+              <div className="text-xs text-muted-foreground/70">
+                {new Date(entry.timestamp).toLocaleTimeString()}
+              </div>
             </div>
-          </div>
-          <div className="text-xs text-muted-foreground">
-            {request.service}.{request.method}
-          </div>
-        </button>
-      ))}
+            <div className="text-xs text-muted-foreground">
+              {entry.endpoint} • {entry.duration}ms
+            </div>
+          </button>
+        )
+      })}
     </div>
   )
 }
