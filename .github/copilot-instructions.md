@@ -66,7 +66,8 @@ envPrefix: ['VITE_', 'TAURI_']  // Expose Tauri env vars to frontend
 ## Code Organization Patterns
 
 ### Frontend (React/TypeScript)
-- **Styling**: Tailwind CSS with minimal custom CSS (`index.css` only imports Tailwind)
+- **Styling**: Tailwind CSS with custom design tokens (`frontend/tailwind.config.js`) backed by CSS variables in `frontend/src/index.css`
+- **UI components**: Reuse the micro components exported from `frontend/src/components/ui` (`Button`, `Card`, `Input`, `Select`, `Textarea`, `Badge`, etc.) and add new primitives there when needed
 - **Entry point**: `main.tsx` → `App.tsx` (currently basic, expand here for routing)
 - **Build target**: Modern browsers (Chrome 105+/Safari 13+) due to Tauri's embedded webview
 
@@ -85,7 +86,14 @@ envPrefix: ['VITE_', 'TAURI_']  // Expose Tauri env vars to frontend
 ### Backend Stack  
 - Tauri 1.6+ (native app framework)
 - serde + serde_json (serialization for frontend communication)
-- **Missing gRPC deps** - likely need `tonic` or similar when implementing core features
+- tonic + prost/prost-types + hyper/http2 for gRPC transport and schema compilation
+
+## Design System
+
+- Tailwind theme tokens live in `frontend/tailwind.config.js` and map to CSS variables set in `frontend/src/index.css` (light + dark ready)
+- Build UI with the micro components exported from `frontend/src/components/ui`; create or extend these primitives before adding ad-hoc markup
+- Keep layouts spacious, typography light, and rely on the subtle shadows/radii defined in the theme for a minimalist aesthetic
+- When a new reusable pattern emerges, add a component in `components/ui` and document its intent via succinct comments if behavior is non-obvious
 
 ## Common Development Tasks
 

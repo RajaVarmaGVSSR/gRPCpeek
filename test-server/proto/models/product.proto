@@ -1,0 +1,37 @@
+syntax = "proto3";
+
+package models;
+
+import "common/types.proto";
+
+option java_multiple_files = true;
+option java_package = "com.example.models";
+
+message Product {
+  string id = 1;
+  string name = 2;
+  string description = 3;
+  double price = 4;
+  string currency = 5;
+  int32 stock_quantity = 6;
+  string category = 7;
+  repeated string tags = 8;
+  ProductStatus status = 9;
+  string created_at = 10;
+  string updated_at = 11;
+  map<string, string> attributes = 12;
+}
+
+enum ProductStatus {
+  PRODUCT_STATUS_UNSPECIFIED = 0;
+  AVAILABLE = 1;
+  OUT_OF_STOCK = 2;
+  DISCONTINUED = 3;
+}
+
+message Category {
+  string id = 1;
+  string name = 2;
+  string parent_id = 3;
+  int32 product_count = 4;
+}

@@ -1,0 +1,50 @@
+syntax = "proto3";
+
+package services;
+
+option java_multiple_files = true;
+option java_package = "com.example.services";
+
+// Bidirectional streaming service for real-time chat
+service ChatService {
+  // Bidirectional streaming - chat conversation
+  rpc Chat (stream ChatMessage) returns (stream ChatMessage);
+  
+  // Client streaming - upload multiple messages and get summary
+  rpc UploadMessages (stream ChatMessage) returns (MessageSummary);
+  
+  // Server streaming - subscribe to room messages
+  rpc SubscribeToRoom (RoomSubscription) returns (stream ChatMessage);
+}
+
+message ChatMessage {
+  string id = 1;
+  string user_id = 2;
+  string user_name = 3;
+  string room_id = 4;
+  string message = 5;
+  string timestamp = 6;
+  MessageType type = 7;
+  map<string, string> metadata = 8;
+}
+
+enum MessageType {
+  MESSAGE_TYPE_UNSPECIFIED = 0;
+  TEXT = 1;
+  IMAGE = 2;
+  FILE = 3;
+  SYSTEM = 4;
+}
+
+message RoomSubscription {
+  string room_id = 1;
+  string user_id = 2;
+  string since_timestamp = 3; // Only get messages after this time
+}
+
+message MessageSummary {
+  int32 total_messages = 1;
+  int32 total_users = 2;
+  string first_message_time = 3;
+  string last_message_time = 4;
+}

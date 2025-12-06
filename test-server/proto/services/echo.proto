@@ -1,0 +1,58 @@
+syntax = "proto3";
+
+package services;
+
+option java_multiple_files = true;
+option java_package = "com.example.services";
+
+// Echo service for testing various protobuf types
+service EchoService {
+  // Unary - Echo different payload types
+  rpc Echo (EchoRequest) returns (EchoResponse);
+  
+  // Bidirectional streaming - Echo stream
+  rpc EchoStream (stream EchoRequest) returns (stream EchoResponse);
+  
+  // Server streaming - Echo with delay
+  rpc EchoDelayed (EchoRequest) returns (stream EchoResponse);
+}
+
+message EchoRequest {
+  oneof payload {
+    string text = 1;
+    int32 number = 2;
+    bool flag = 3;
+    bytes data = 4;
+    ComplexData complex = 5;
+  }
+  repeated string items = 6;
+  map<string, string> metadata = 7;
+  int32 delay_ms = 8; // For delayed echo
+  int32 repeat_count = 9; // How many times to echo
+}
+
+message EchoResponse {
+  oneof payload {
+    string text = 1;
+    int32 number = 2;
+    bool flag = 3;
+    bytes data = 4;
+    ComplexData complex = 5;
+  }
+  repeated string items = 6;
+  map<string, string> metadata = 7;
+  string echoed_at = 8;
+  int32 echo_count = 9; // Which echo this is
+}
+
+message ComplexData {
+  string id = 1;
+  repeated NestedData nested = 2;
+  map<string, NestedData> nested_map = 3;
+}
+
+message NestedData {
+  string key = 1;
+  int32 value = 2;
+  repeated string tags = 3;
+}
