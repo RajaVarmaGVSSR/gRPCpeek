@@ -30,6 +30,9 @@ export function createWorkspace(name: string): Workspace {
     environments: [createDefaultEnvironment()],
     collections: [],
     requestHistory: [],
+    services: [],  // Initialize empty services array
+    openTabs: [],  // Initialize empty tabs array
+    activeTabId: null,  // No active tab initially
     createdAt: now,
     updatedAt: now,
   }
@@ -51,7 +54,11 @@ function migrateWorkspace(workspace: any): Workspace {
     collections: workspace.collections || [],
     environments: migratedEnvironments,
     globals: workspace.globals || [],
-    importPaths: workspace.importPaths || []
+    importPaths: workspace.importPaths || [],
+    // Add session state fields if missing
+    services: workspace.services || [],
+    openTabs: workspace.openTabs || [],
+    activeTabId: workspace.activeTabId !== undefined ? workspace.activeTabId : null,
   }
 }
 
@@ -512,4 +519,42 @@ function generateId(): string {
 export function getEndpoint(environment: Environment | null): string {
   if (!environment) return 'http://localhost:50051'
   return `http://${environment.host}:${environment.port}`
+}
+
+// ============================================================================
+// Session State Management (Services & Tabs)
+// ============================================================================
+
+export function saveServicesToWorkspace(
+  workspace: Workspace,
+  services: any[]
+): Workspace {
+  return {
+    ...workspace,
+    services: services,
+    updatedAt: new Date().toISOString(),
+  }
+}
+
+export function saveTabsToWorkspace(
+  workspace: Workspace,
+  tabs: RequestTab[],
+  activeTabId: string | null
+): Workspace {
+  return {
+    ...workspace,
+    openTabs: tabs,
+    activeTabId: activeTabId,
+    updatedAt: new Date().toISOString(),
+  }
+}
+
+export function clearWorkspaceSession(workspace: Workspace): Workspace {
+  return {
+    ...workspace,
+    services: [],
+    openTabs: [],
+    activeTabId: null,
+    updatedAt: new Date().toISOString(),
+  }
 }

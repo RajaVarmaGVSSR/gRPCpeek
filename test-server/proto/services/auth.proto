@@ -62,7 +62,8 @@ message TokenResponse {
 }
 
 message ValidateTokenRequest {
-  string token = 1;
+  // Token is extracted from Authorization header (Bearer token)
+  // Request body can be empty
 }
 
 message ValidationResponse {

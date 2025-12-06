@@ -407,6 +407,8 @@ function App() {
                   workspace={workspaceManager.workspace}
                   onSendRequest={requestManager.handleGrpcCall}
                   onSaveRequest={requestManager.handleSaveRequest}
+                  onSendStreamMessage={requestManager.handleSendStreamMessage}
+                  onFinishStreaming={requestManager.handleFinishStreaming}
                   services={requestManager.services}
                 />
               ) : (

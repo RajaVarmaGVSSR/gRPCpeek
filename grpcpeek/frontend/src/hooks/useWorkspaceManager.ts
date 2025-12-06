@@ -162,18 +162,21 @@ export function useWorkspaceManager(): UseWorkspaceManagerReturn {
   }, [workspace, syncWorkspaceState])
 
   const handleGlobalVariablesSave = useCallback((variables: Variable[]) => {
+    // Start with current workspace and chain updates
+    let updatedWorkspace = { ...workspace }
+    
     // Clear existing globals
     workspace.globals.forEach(v => {
-      deleteGlobalVariable(workspace, v.id)
+      updatedWorkspace = deleteGlobalVariable(updatedWorkspace, v.id)
     })
     
     // Add new globals
     variables.forEach(v => {
-      addGlobalVariable(workspace, v.key, v.value, v.secret || false)
+      updatedWorkspace = addGlobalVariable(updatedWorkspace, v.key, v.value, v.secret || false)
     })
     
-    saveWorkspace(workspace)
-    setWorkspace({ ...workspace })
+    saveWorkspace(updatedWorkspace)
+    setWorkspace(updatedWorkspace)
   }, [workspace])
 
   const updateWorkspace = useCallback((updates: Partial<Workspace>) => {

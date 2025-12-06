@@ -335,7 +335,7 @@ const helloServiceImpl = {
         language,
       });
       count++;
-    }, 500);
+    }, 2000); // Changed from 500ms to 2000ms (2 seconds) for easier testing
   },
 
   SayMultipleHellos: (call, callback) => {
@@ -874,7 +874,23 @@ const authServiceImpl = {
   },
 
   ValidateToken: (call, callback) => {
-    const { token } = call.request;
+    // Extract token from Authorization header (Bearer token)
+    const metadata = call.metadata.getMap();
+    const authHeader = metadata.authorization || '';
+    
+    // Parse "Bearer <token>" format
+    let token = null;
+    if (authHeader.startsWith('Bearer ')) {
+      token = authHeader.substring(7); // Remove "Bearer " prefix
+    }
+
+    if (!token) {
+      callback(null, {
+        valid: false,
+      });
+      return;
+    }
+
     const session = sessions.get(token);
 
     if (session && session.expires_at > Date.now()) {

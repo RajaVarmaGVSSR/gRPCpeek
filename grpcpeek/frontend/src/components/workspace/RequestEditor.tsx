@@ -1,7 +1,9 @@
 import { useState } from 'react'
-import { Card, Label, Textarea, Button, Input, Select } from '../ui'
-import type { RequestTab, AuthConfig, TlsConfig, Workspace, VariableContext, Service } from '../../types/workspace'
+import { Card, Label, Button, Input, Select } from '../ui'
+import type { RequestTab, AuthConfig, TlsConfig, Workspace, VariableContext, Service, ClientStreamMessage } from '../../types/workspace'
 import { VariableIndicator } from './VariableIndicator'
+import { VariableHighlightedTextarea } from './VariableHighlightedTextarea'
+import { ClientStreamingEditor } from './ClientStreamingEditor'
 import { open } from '@tauri-apps/plugin-dialog'
 
 interface RequestEditorProps {
@@ -13,6 +15,8 @@ interface RequestEditorProps {
   workspace: Workspace
   onSendRequest: () => void
   onSaveRequest: () => void
+  onSendStreamMessage: (messageId: string) => void
+  onFinishStreaming: () => void
   services: Service[]
 }
 
@@ -25,13 +29,19 @@ export function RequestEditor({
   workspace,
   onSendRequest,
   onSaveRequest,
+  onSendStreamMessage,
+  onFinishStreaming,
   services,
 }: RequestEditorProps) {
   const [activeSection, setActiveSection] = useState<'body' | 'metadata' | 'auth' | 'tls'>('body')
   
+  // Check if this is a client streaming method
+  const isClientStreaming = tab.methodType === 'client_streaming' || tab.methodType === 'bidirectional_streaming'
+  
   // Get available methods for the selected service
   const selectedService = services.find(s => s.name === tab.service)
   const availableMethods = selectedService?.methods || []
+  const currentMethod = availableMethods.find(m => m.name === tab.method)
 
   // Build variable context from tab's selected environment
   const selectedEnv = workspace.environments.find(env => env.id === tab.selectedEnvironmentId)
@@ -44,25 +54,80 @@ export function RequestEditor({
     onUpdate({ requestBody: value, isDirty: true })
   }
 
-  const handleMetadataChange = (key: string, value: string) => {
-    const newMetadata = { ...tab.metadata }
-    if (value) {
-      newMetadata[key] = value
-    } else {
-      delete newMetadata[key]
-    }
+  // Use local state for metadata editing with IDs to handle empty entries
+  type MetadataEntry = { id: string; key: string; value: string }
+  const [metadataEntries, setMetadataEntries] = useState<MetadataEntry[]>(() => 
+    Object.entries(tab.metadata).map(([key, value], index) => ({ 
+      id: `init-${index}-${key}`,
+      key, 
+      value 
+    }))
+  )
+
+  // Track if we're in the middle of an update to avoid feedback loops
+  const [isUpdating, setIsUpdating] = useState(false)
+
+  // Sync metadataEntries when tab.metadata changes externally (e.g., switching tabs)
+  // but NOT when we triggered the update ourselves
+  const [lastSyncedMetadata, setLastSyncedMetadata] = useState(tab.metadata)
+  if (tab.metadata !== lastSyncedMetadata && !isUpdating) {
+    // Preserve IDs for existing entries, create new IDs only for new entries
+    const existingEntriesMap = new Map(metadataEntries.map(e => [e.key, e.id]))
+    setMetadataEntries(Object.entries(tab.metadata).map(([key, value], index) => ({ 
+      id: existingEntriesMap.get(key) || `sync-${Date.now()}-${index}`,
+      key, 
+      value 
+    })))
+    setLastSyncedMetadata(tab.metadata)
+  }
+
+  const syncMetadataToTab = (entries: MetadataEntry[]) => {
+    setIsUpdating(true)
+    // Convert entries to object, only including non-empty keys
+    const newMetadata = entries.reduce<Record<string, string>>((acc, entry) => {
+      const trimmedKey = entry.key.trim()
+      if (trimmedKey) {
+        acc[trimmedKey] = entry.value
+      }
+      return acc
+    }, {})
     onUpdate({ metadata: newMetadata, isDirty: true })
+    setLastSyncedMetadata(newMetadata)
+    // Reset the flag after React has processed the update
+    setTimeout(() => setIsUpdating(false), 0)
   }
 
   const addMetadataEntry = () => {
-    const newKey = `key-${Date.now()}`
-    handleMetadataChange(newKey, '')
+    const newEntry = { 
+      id: `new-${Date.now()}`, 
+      key: '', 
+      value: '' 
+    }
+    const updated = [...metadataEntries, newEntry]
+    setMetadataEntries(updated)
+    // Don't sync yet - let user fill in the fields first
   }
 
-  const removeMetadataEntry = (key: string) => {
-    const newMetadata = { ...tab.metadata }
-    delete newMetadata[key]
-    onUpdate({ metadata: newMetadata, isDirty: true })
+  const updateMetadataKey = (id: string, newKey: string) => {
+    const updated = metadataEntries.map(entry => 
+      entry.id === id ? { ...entry, key: newKey } : entry
+    )
+    setMetadataEntries(updated)
+    syncMetadataToTab(updated)
+  }
+
+  const updateMetadataValue = (id: string, newValue: string) => {
+    const updated = metadataEntries.map(entry => 
+      entry.id === id ? { ...entry, value: newValue } : entry
+    )
+    setMetadataEntries(updated)
+    syncMetadataToTab(updated)
+  }
+
+  const removeMetadataEntry = (id: string) => {
+    const updated = metadataEntries.filter(entry => entry.id !== id)
+    setMetadataEntries(updated)
+    syncMetadataToTab(updated)
   }
 
   const handleAuthChange = (updates: Partial<AuthConfig>) => {
@@ -101,11 +166,20 @@ export function RequestEditor({
     const method = availableMethods.find(m => m.name === methodName)
     if (!method) return
 
+    const isMethodClientStreaming = method.methodType === 'client_streaming' || method.methodType === 'bidirectional_streaming'
+    
+    // Initialize client streaming messages with one empty message if switching to client streaming
+    const clientStreamingMessages: ClientStreamMessage[] | undefined = isMethodClientStreaming
+      ? [{ id: crypto.randomUUID(), body: method.sampleRequest || '{}', sent: false }]
+      : undefined
+
     onUpdate({
       method: methodName,
       methodType: method.methodType,
       name: `${tab.service}.${methodName}`,
       requestBody: method.sampleRequest || '',
+      clientStreamingMessages,
+      streamConnectionOpen: false,
       isDirty: true,
     })
   }
@@ -187,11 +261,16 @@ export function RequestEditor({
         {/* Action Buttons */}
         <div className="flex gap-2">
           <Button
-            onClick={onSendRequest}
+            onClick={isClientStreaming && tab.streamConnectionOpen ? onFinishStreaming : onSendRequest}
             disabled={tab.isLoading}
             className="flex-1"
           >
-            {tab.isLoading ? '⏳ Calling...' : '🚀 Send Request'}
+            {tab.isLoading 
+              ? '⏳ Calling...' 
+              : isClientStreaming && tab.streamConnectionOpen 
+                ? '✓ Finish Streaming' 
+                : '🚀 Send Request'
+            }
           </Button>
           <Button
             variant="secondary"
@@ -224,7 +303,14 @@ export function RequestEditor({
               : 'text-muted-foreground hover:text-foreground'
           }`}
         >
-          Metadata {Object.keys(tab.metadata).length > 0 && `(${Object.keys(tab.metadata).length})`}
+          Metadata {(() => {
+            const requestCount = Object.keys(tab.metadata).length
+            const envCount = !tab.disableEnvironmentMetadata && selectedEnv?.metadata 
+              ? Object.keys(selectedEnv.metadata).length 
+              : 0
+            const total = requestCount + envCount
+            return total > 0 ? `(${total})` : ''
+          })()}
         </button>
         <button
           onClick={() => setActiveSection('auth')}
@@ -252,88 +338,172 @@ export function RequestEditor({
       <div className="flex-1 flex flex-col overflow-hidden">
         {activeSection === 'body' && (
           <>
-            <div className="flex-shrink-0 flex items-center justify-between mb-2">
-              <div className="flex items-center gap-2">
-                <Label htmlFor="request-body">Request Body (JSON)</Label>
-                <VariableIndicator text={tab.requestBody} context={variableContext} />
-              </div>
-              <Button
-                variant="ghost"
-                size="sm"
-                onClick={formatJSON}
-                className="h-6 px-2 text-xs"
-              >
-                Format JSON
-              </Button>
-            </div>
-            <Textarea
-              id="request-body"
-              value={tab.requestBody}
-              onChange={(e) => handleBodyChange(e.target.value)}
-              placeholder='{"field": "value"}'
-              className="flex-1 resize-none font-mono text-xs mb-2"
-            />
-            {tab.requestBody && (
-              <p className="flex-shrink-0 text-xs text-muted-foreground">
-                💡 Use <code className="px-1 py-0.5 rounded bg-surface-muted font-mono">{'{{env.varName}}'}</code> or <code className="px-1 py-0.5 rounded bg-surface-muted font-mono">{'{{global.varName}}'}</code> for dynamic values
-              </p>
+            {isClientStreaming ? (
+              <ClientStreamingEditor
+                messages={tab.clientStreamingMessages || []}
+                streamConnectionOpen={tab.streamConnectionOpen || false}
+                isLoading={false}
+                variableContext={variableContext}
+                sampleRequest={currentMethod?.sampleRequest || '{}'}
+                onUpdate={(messages: ClientStreamMessage[]) => {
+                  onUpdate({ ...tab, clientStreamingMessages: messages })
+                }}
+                onSendMessage={onSendStreamMessage}
+                onFinishStreaming={onFinishStreaming}
+              />
+            ) : (
+              <>
+                <div className="flex-shrink-0 flex items-center justify-between mb-2">
+                  <div className="flex items-center gap-2">
+                    <Label htmlFor="request-body">Request Body (JSON)</Label>
+                    <VariableIndicator text={tab.requestBody} context={variableContext} />
+                  </div>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={formatJSON}
+                    className="h-6 px-2 text-xs"
+                  >
+                    Format JSON
+                  </Button>
+                </div>
+                <VariableHighlightedTextarea
+                  id="request-body"
+                  value={tab.requestBody}
+                  onChange={handleBodyChange}
+                  context={variableContext}
+                  placeholder='{"field": "value"}'
+                  className="flex-1 mb-2"
+                />
+                {tab.requestBody && (
+                  <p className="flex-shrink-0 text-xs text-muted-foreground">
+                    💡 Use <code className="px-1 py-0.5 rounded bg-surface-muted font-mono">{'{{env.varName}}'}</code> or <code className="px-1 py-0.5 rounded bg-surface-muted font-mono">{'{{global.varName}}'}</code> for dynamic values.
+                    Click variables to see resolved values.
+                  </p>
+                )}
+              </>
             )}
           </>
         )}
 
         {activeSection === 'metadata' && (
-          <div className="space-y-3">
-            <div className="flex items-center justify-between">
-              <Label>gRPC Metadata Headers</Label>
-              <Button
-                variant="secondary"
-                size="sm"
-                onClick={addMetadataEntry}
-                className="h-6 px-2 text-xs"
-              >
-                + Add Header
-              </Button>
-            </div>
-
-            {Object.entries(tab.metadata).length === 0 ? (
-              <div className="rounded-lg border border-dashed border-border/50 bg-surface-muted/20 p-6 text-center">
-                <p className="text-sm text-muted-foreground">
-                  No metadata headers yet. Click "Add Header" to add one.
-                </p>
-              </div>
-            ) : (
+          <div className="space-y-4">
+            {/* Environment-level metadata (inherited, read-only) */}
+            {selectedEnv?.metadata && Object.keys(selectedEnv.metadata).length > 0 && (
               <div className="space-y-2">
-                {Object.entries(tab.metadata).map(([key, value]) => (
-                  <div key={key} className="flex gap-2">
-                    <Input
-                      value={key}
-                      onChange={(e) => {
-                        const oldValue = tab.metadata[key]
-                        removeMetadataEntry(key)
-                        handleMetadataChange(e.target.value, oldValue)
-                      }}
-                      placeholder="Header name"
-                      className="flex-1 text-xs"
-                    />
-                    <Input
-                      value={value}
-                      onChange={(e) => handleMetadataChange(key, e.target.value)}
-                      placeholder="Header value"
-                      className="flex-1 text-xs"
-                    />
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      onClick={() => removeMetadataEntry(key)}
-                      className="h-9 w-9 p-0"
-                      title="Remove header"
-                    >
-                      ✕
-                    </Button>
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-3">
+                    <Label className="text-xs text-muted-foreground">
+                      From Environment: {selectedEnv.name}
+                    </Label>
+                    <label className="flex items-center gap-2 cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={!tab.disableEnvironmentMetadata}
+                        onChange={(e) => onUpdate({ 
+                          disableEnvironmentMetadata: !e.target.checked,
+                          isDirty: true 
+                        })}
+                        className="h-4 w-4 rounded border-border text-focus"
+                      />
+                      <span className="text-xs text-foreground">Use environment headers</span>
+                    </label>
                   </div>
-                ))}
+                  <span className="text-xs text-muted-foreground">
+                    (Read-only)
+                  </span>
+                </div>
+                {!tab.disableEnvironmentMetadata ? (
+                  <div className="space-y-2 rounded-lg border border-border/30 bg-surface-muted/30 p-3">
+                    {Object.entries(selectedEnv.metadata).map(([key, value]) => (
+                      <div key={key} className="flex gap-2 items-center">
+                        <Input
+                          value={key}
+                          readOnly
+                          className="flex-1 text-xs bg-surface-muted/50 cursor-not-allowed"
+                          title="Environment header (read-only)"
+                        />
+                        <Input
+                          value={value}
+                          readOnly
+                          className="flex-1 text-xs bg-surface-muted/50 cursor-not-allowed"
+                          title="Environment header (read-only)"
+                        />
+                        <div className="h-9 w-9 flex items-center justify-center text-muted-foreground" title="Inherited from environment">
+                          🔒
+                        </div>
+                      </div>
+                    ))}
+                    <p className="text-xs text-muted-foreground mt-2">
+                      💡 These headers are inherited from the environment. Edit them in Workspace Settings → Environments.
+                    </p>
+                  </div>
+                ) : (
+                  <div className="rounded-lg border border-dashed border-border/50 bg-surface-muted/20 p-4 text-center">
+                    <p className="text-sm text-muted-foreground">
+                      Environment headers disabled for this request.
+                    </p>
+                  </div>
+                )}
               </div>
             )}
+
+            {/* Request-level metadata (editable) */}
+            <div className="space-y-3">
+              <div className="flex items-center justify-between">
+                <Label>Request-Specific Headers</Label>
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  onClick={addMetadataEntry}
+                  className="h-6 px-2 text-xs"
+                >
+                  + Add Header
+                </Button>
+              </div>
+
+              {metadataEntries.length === 0 ? (
+                <div className="rounded-lg border border-dashed border-border/50 bg-surface-muted/20 p-6 text-center">
+                  <p className="text-sm text-muted-foreground">
+                    No request-specific headers yet. Click "Add Header" to add one.
+                  </p>
+                </div>
+              ) : (
+                <div className="space-y-2">
+                  {metadataEntries.map((entry) => (
+                    <div key={entry.id} className="flex gap-2">
+                      <Input
+                        value={entry.key}
+                        onChange={(e) => updateMetadataKey(entry.id, e.target.value)}
+                        placeholder="Header name"
+                        className="flex-1 text-xs"
+                      />
+                      <Input
+                        value={entry.value}
+                        onChange={(e) => updateMetadataValue(entry.id, e.target.value)}
+                        placeholder="Header value"
+                        className="flex-1 text-xs"
+                      />
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        onClick={() => removeMetadataEntry(entry.id)}
+                        className="h-9 w-9 p-0"
+                        title="Remove header"
+                      >
+                        ✕
+                      </Button>
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              {metadataEntries.length > 0 && (
+                <p className="text-xs text-muted-foreground">
+                  💡 Request headers will override environment headers with the same name.
+                </p>
+              )}
+            </div>
           </div>
         )}
 

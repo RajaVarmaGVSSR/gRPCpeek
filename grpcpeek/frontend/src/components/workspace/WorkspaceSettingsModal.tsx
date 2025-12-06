@@ -233,60 +233,106 @@ export function WorkspaceSettingsModal({
 
           {/* Global Variables Tab */}
           {activeTab === 'globals' && (
-            <div className="space-y-4">
+            <section className="space-y-4">
               <div className="flex items-center justify-between">
-                <div>
-                  <h3 className="text-sm font-medium text-foreground">Global Variables</h3>
-                  <p className="text-xs text-muted-foreground">
-                    Variables available across all environments in this workspace
-                  </p>
-                </div>
-                <Button
-                  variant="secondary"
-                  size="sm"
-                  onClick={() => {
-                    // This will be handled by the existing GlobalVariablesModal
-                    // For now, show a message
-                    alert('Use the Global Variables button in the header bar to edit variables')
-                  }}
-                >
-                  ✏️ Edit Variables
+                <h3 className="text-sm font-semibold uppercase tracking-wide text-muted-foreground">Global Variables</h3>
+                <Button size="sm" onClick={() => {
+                  const newVariable: Variable = {
+                    id: `var-${Date.now()}`,
+                    key: '',
+                    value: '',
+                    enabled: true,
+                    secret: false,
+                  }
+                  onSave({
+                    globals: [...workspace.globals, newVariable],
+                  })
+                }}>
+                  + Add Variable
                 </Button>
               </div>
 
+              <p className="text-sm text-muted-foreground">
+                Define variables that can be referenced in requests using <code className="px-1 py-0.5 rounded bg-surface-muted font-mono">{'{{global.varName}}'}</code>
+              </p>
+
               {workspace.globals.length === 0 ? (
-                <Card className="p-6 text-center">
-                  <p className="text-sm text-muted-foreground">
-                    No global variables defined. Click "Edit Variables" to add some.
-                  </p>
-                </Card>
+                <div className="rounded-lg border border-dashed border-border/50 bg-surface-muted/20 p-6 text-center">
+                  <p className="text-sm text-muted-foreground">No global variables yet. Click "Add Variable" to create one.</p>
+                </div>
               ) : (
                 <div className="space-y-2">
                   {workspace.globals.map((variable) => (
-                    <Card key={variable.id} className="p-3">
-                      <div className="flex items-center gap-3">
-                        <div className="flex-1 min-w-0">
-                          <div className="flex items-center gap-2">
-                            <span className="text-sm font-medium font-mono text-foreground">
-                              {variable.key}
-                            </span>
-                            {variable.secret && (
-                              <span className="text-xs text-warning" title="Secret value (hidden)">
-                                🔒
-                              </span>
-                            )}
-                            {!variable.enabled && (
-                              <span className="text-xs text-muted-foreground" title="Disabled">
-                                (disabled)
-                              </span>
-                            )}
-                          </div>
-                          <div className="mt-1 text-xs font-mono text-muted-foreground truncate">
-                            {variable.secret ? '••••••••' : variable.value}
-                          </div>
-                        </div>
-                      </div>
-                    </Card>
+                    <div key={variable?.id || Math.random()} className="flex items-center gap-2 rounded-lg border border-border/60 bg-surface p-3">
+                      <input
+                        type="checkbox"
+                        checked={variable?.enabled ?? true}
+                        onChange={(e) => {
+                          onSave({
+                            globals: workspace.globals.map((v) =>
+                              v.id === variable.id ? { ...v, enabled: e.target.checked } : v
+                            ),
+                          })
+                        }}
+                        className="h-4 w-4 rounded border-border text-focus"
+                        title="Enable/disable variable"
+                      />
+                      
+                      <Input
+                        value={variable?.key || ''}
+                        onChange={(e) => {
+                          onSave({
+                            globals: workspace.globals.map((v) =>
+                              v.id === variable.id ? { ...v, key: e.target.value } : v
+                            ),
+                          })
+                        }}
+                        placeholder="KEY"
+                        className="flex-1"
+                      />
+                      
+                      <Input
+                        type={variable?.secret ? 'password' : 'text'}
+                        value={variable?.value || ''}
+                        onChange={(e) => {
+                          onSave({
+                            globals: workspace.globals.map((v) =>
+                              v.id === variable.id ? { ...v, value: e.target.value } : v
+                            ),
+                          })
+                        }}
+                        placeholder="value"
+                        className="flex-1"
+                      />
+                      
+                      <button
+                        onClick={() => {
+                          onSave({
+                            globals: workspace.globals.map((v) =>
+                              v.id === variable.id ? { ...v, secret: !v.secret } : v
+                            ),
+                          })
+                        }}
+                        className="rounded p-2 text-muted-foreground transition hover:bg-surface-muted hover:text-foreground"
+                        title={variable?.secret ? 'Show value' : 'Hide value'}
+                      >
+                        {variable?.secret ? '👁️' : '🔒'}
+                      </button>
+                      
+                      <button
+                        onClick={() => {
+                          onSave({
+                            globals: workspace.globals.filter((v) => v.id !== variable.id),
+                          })
+                        }}
+                        className="rounded p-2 text-muted-foreground transition hover:bg-red-50 hover:text-red-600 dark:hover:bg-red-900/20"
+                        title="Delete variable"
+                      >
+                        <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                        </svg>
+                      </button>
+                    </div>
                   ))}
                 </div>
               )}
@@ -297,7 +343,7 @@ export function WorkspaceSettingsModal({
                   Use them for values that don't change between dev/staging/prod (like API endpoints, region names, etc.)
                 </p>
               </div>
-            </div>
+            </section>
           )}
 
           {activeTab === 'environments' && (

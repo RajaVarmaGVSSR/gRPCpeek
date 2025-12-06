@@ -1,13 +1,24 @@
-import { useState } from 'react'
-import { Button } from '../ui'
+import { useState, useEffect } from 'react'
 
 interface StreamingResponsePanelProps {
   messages: any[]
-  onClear: () => void
+  onClear?: () => void  // Optional now, kept for backwards compatibility
 }
 
-export function StreamingResponsePanel({ messages, onClear }: StreamingResponsePanelProps) {
-  const [expandedIndices, setExpandedIndices] = useState<Set<number>>(new Set())
+export function StreamingResponsePanel({ messages }: StreamingResponsePanelProps) {
+  // Initialize with all messages expanded by default
+  const [expandedIndices, setExpandedIndices] = useState<Set<number>>(
+    new Set(messages.map((_, i) => i))
+  )
+
+  // Auto-expand new messages as they arrive
+  useEffect(() => {
+    setExpandedIndices(prev => {
+      const next = new Set(prev)
+      messages.forEach((_, i) => next.add(i))
+      return next
+    })
+  }, [messages.length])
 
   if (messages.length === 0) {
     return null
@@ -44,33 +55,19 @@ export function StreamingResponsePanel({ messages, onClear }: StreamingResponseP
             {messages.length}
           </span>
         </div>
-        <div className="flex items-center gap-1">
-          <Button 
-            variant="ghost" 
-            size="sm" 
+        <div className="flex items-center gap-1.5">
+          <button
             onClick={expandAll}
-            className="h-6 px-2 text-xs text-muted-foreground hover:text-foreground"
+            className="rounded px-2.5 py-1 text-xs font-medium text-muted-foreground transition-colors hover:bg-surface-muted hover:text-foreground"
           >
             Expand All
-          </Button>
-          <span className="text-muted-foreground/30">•</span>
-          <Button 
-            variant="ghost" 
-            size="sm" 
+          </button>
+          <button
             onClick={collapseAll}
-            className="h-6 px-2 text-xs text-muted-foreground hover:text-foreground"
+            className="rounded px-2.5 py-1 text-xs font-medium text-muted-foreground transition-colors hover:bg-surface-muted hover:text-foreground"
           >
             Collapse All
-          </Button>
-          <span className="text-muted-foreground/30">•</span>
-          <Button 
-            variant="ghost" 
-            size="sm" 
-            onClick={onClear}
-            className="h-6 px-2 text-xs text-muted-foreground hover:text-red-600 dark:hover:text-red-400"
-          >
-            Clear
-          </Button>
+          </button>
         </div>
       </div>
 
@@ -86,16 +83,8 @@ export function StreamingResponsePanel({ messages, onClear }: StreamingResponseP
                 onClick={() => toggleMessage(index)}
                 className="flex w-full items-center gap-2.5 px-3 py-2 text-left transition-colors hover:bg-surface-muted/30"
               >
-                <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded bg-green-100 font-mono text-[10px] font-bold text-green-700 dark:bg-green-900/40 dark:text-green-300">
-                  {index + 1}
-                </span>
-                <span className="font-mono text-[10px] text-muted-foreground">
-                  {new Date().toLocaleTimeString('en-US', { 
-                    hour12: false, 
-                    hour: '2-digit', 
-                    minute: '2-digit', 
-                    second: '2-digit'
-                  })}.{new Date().getMilliseconds().toString().padStart(3, '0')}
+                <span className="text-sm font-medium text-foreground">
+                  Response {index + 1}
                 </span>
                 {!isExpanded && (
                   <span className="flex-1 truncate text-xs text-muted-foreground/60">

@@ -79,6 +79,12 @@ export interface Workspace {
   environments: Environment[]
   collections: Collection[]
   requestHistory: HistoryEntry[]
+  
+  // Session state (persisted across app restarts)
+  services?: Service[]  // Parsed services from proto files
+  openTabs?: RequestTab[]  // Currently open request tabs
+  activeTabId?: string | null  // Which tab is currently active
+  
   createdAt: string
   updatedAt: string
 }
@@ -132,8 +138,10 @@ export interface RequestTab {
   methodType: GrpcMethodType
   
   // Request configuration
-  requestBody: string  // JSON
+  requestBody: string  // JSON (for unary/server_streaming)
+  clientStreamingMessages?: ClientStreamMessage[]  // For client_streaming/bidirectional_streaming
   metadata: Record<string, string>  // gRPC metadata headers
+  disableEnvironmentMetadata?: boolean  // Don't inherit metadata from environment
   auth: AuthConfig  // Can override environment auth
   tls?: TlsConfig  // Can override environment TLS config
   
@@ -155,8 +163,16 @@ export interface RequestTab {
   isLoading: boolean
   isDirty: boolean  // Has unsaved changes
   savedRequestId?: string  // If saved to a collection, reference to SavedRequest
+  streamConnectionOpen?: boolean  // For client streaming - is the stream connection open?
   
   createdAt: string
+}
+
+export interface ClientStreamMessage {
+  id: string
+  body: string  // JSON
+  sent: boolean
+  timestamp?: string  // When it was sent
 }
 
 export interface StreamMessage {
