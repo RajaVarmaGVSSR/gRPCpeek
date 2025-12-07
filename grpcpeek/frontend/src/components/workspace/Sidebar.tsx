@@ -1,9 +1,9 @@
 import { useState } from 'react'
 import { Card, Input } from '../ui'
 import { ServicesList } from './ServicesList'
-import { SavedRequestsList } from './SavedRequestsList'
+import { CollectionsTree } from './CollectionsTree'
 import { RequestHistory } from './RequestHistory'
-import type { Service, SavedRequest, HistoryEntry } from '../../types/workspace'
+import type { Service, SavedRequest, HistoryEntry, Collection } from '../../types/workspace'
 
 export type SidebarView = 'services' | 'collections' | 'history'
 
@@ -11,24 +11,43 @@ interface SidebarProps {
   view: SidebarView
   onViewChange: (view: SidebarView) => void
   services: Service[]
-  savedRequests: SavedRequest[]
+  collections: Collection[]
   history: HistoryEntry[]
   onMethodClick: (service: string, method: string) => void
   onSavedRequestClick: (request: SavedRequest) => void
   onSavedRequestDelete: (requestId: string) => void
+  onSavedRequestRename?: (requestId: string, newName: string) => void
   onHistoryClick: (entry: HistoryEntry) => void
+  // Collection management
+  onCreateCollection?: (name: string) => void
+  onRenameCollection?: (collectionId: string, newName: string) => void
+  onDeleteCollection?: (collectionId: string) => void
+  // Folder management
+  onCreateFolder?: (collectionId: string, name: string, parentFolderId?: string) => void
+  onRenameFolder?: (collectionId: string, folderId: string, newName: string) => void
+  onDeleteFolder?: (collectionId: string, folderId: string) => void
+  // Request creation
+  onCreateRequestInCollection?: (collectionId: string, folderId: string | undefined, service: string, method: string) => void
 }
 
 export function Sidebar({
   view,
   onViewChange,
   services,
-  savedRequests,
+  collections,
   history,
   onMethodClick,
   onSavedRequestClick,
   onSavedRequestDelete,
+  onSavedRequestRename,
   onHistoryClick,
+  onCreateCollection,
+  onRenameCollection,
+  onDeleteCollection,
+  onCreateFolder,
+  onRenameFolder,
+  onDeleteFolder,
+  onCreateRequestInCollection,
 }: SidebarProps) {
   const [searchQuery, setSearchQuery] = useState('')
 
@@ -41,15 +60,43 @@ export function Sidebar({
     )
   })
 
-  // Filter saved requests based on search
-  const filteredSaved = savedRequests.filter((req) => {
+  // Filter collections based on search (filters requests within collections)
+  const filteredCollections = collections.map((collection) => {
     const query = searchQuery.toLowerCase()
-    return (
+    
+    // Helper to filter requests recursively in folders
+    const filterFolder = (folder: any): any => {
+      const filteredRequests = folder.requests.filter((req: SavedRequest) =>
+        req.name.toLowerCase().includes(query) ||
+        req.service.toLowerCase().includes(query) ||
+        req.method.toLowerCase().includes(query)
+      )
+      const filteredSubFolders = folder.folders
+        .map(filterFolder)
+        .filter((f: any) => f.requests.length > 0 || f.folders.length > 0)
+      
+      return {
+        ...folder,
+        requests: filteredRequests,
+        folders: filteredSubFolders,
+      }
+    }
+
+    const filteredRootRequests = collection.requests.filter((req) =>
       req.name.toLowerCase().includes(query) ||
       req.service.toLowerCase().includes(query) ||
       req.method.toLowerCase().includes(query)
     )
-  })
+    const filteredFolders = collection.folders
+      .map(filterFolder)
+      .filter((f) => f.requests.length > 0 || f.folders.length > 0)
+
+    return {
+      ...collection,
+      requests: filteredRootRequests,
+      folders: filteredFolders,
+    }
+  }).filter((c) => c.requests.length > 0 || c.folders.length > 0)
 
   // Filter history based on search
   const filteredHistory = history.filter((entry) => {
@@ -61,7 +108,7 @@ export function Sidebar({
   })
 
   return (
-    <div className="flex h-full border-r border-border bg-surface lg:border-r-0 lg:rounded-xl lg:border lg:border-border/70">
+    <div className="flex h-full border-r border-border bg-surface lg:border-r-0 lg:border lg:border-border/70">
       {/* Vertical Tabs */}
       <div className="flex flex-col w-16 border-r border-border bg-surface-muted/30">
         <button
@@ -157,7 +204,7 @@ export function Sidebar({
 
         {view === 'collections' && (
           <div>
-            {searchQuery && filteredSaved.length === 0 ? (
+            {searchQuery && filteredCollections.length === 0 ? (
               <Card className="p-6">
                 <div className="space-y-2 text-center">
                   <div className="text-2xl">🔍</div>
@@ -167,10 +214,19 @@ export function Sidebar({
                 </div>
               </Card>
             ) : (
-              <SavedRequestsList
-                requests={filteredSaved}
+              <CollectionsTree
+                collections={searchQuery ? filteredCollections : collections}
+                services={services}
                 onRequestClick={onSavedRequestClick}
                 onRequestDelete={onSavedRequestDelete}
+                onRequestRename={onSavedRequestRename}
+                onCreateRequest={onCreateRequestInCollection}
+                onCreateCollection={onCreateCollection}
+                onRenameCollection={onRenameCollection}
+                onDeleteCollection={onDeleteCollection}
+                onCreateFolder={onCreateFolder}
+                onRenameFolder={onRenameFolder}
+                onDeleteFolder={onDeleteFolder}
               />
             )}
           </div>

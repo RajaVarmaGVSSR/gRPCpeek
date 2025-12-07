@@ -455,6 +455,63 @@ export function addFolderToCollection(
   }
 }
 
+// Helper to delete a folder recursively
+function deleteFolderRecursive(
+  folders: Folder[],
+  folderId: string
+): Folder[] {
+  return folders
+    .filter((folder) => folder.id !== folderId)
+    .map((folder) => ({
+      ...folder,
+      folders: deleteFolderRecursive(folder.folders, folderId),
+    }))
+}
+
+export function deleteFolderFromCollection(
+  workspace: Workspace,
+  collectionId: string,
+  folderId: string
+): Workspace {
+  return {
+    ...workspace,
+    collections: workspace.collections.map((col) => {
+      if (col.id !== collectionId) return col
+      
+      return {
+        ...col,
+        folders: deleteFolderRecursive(col.folders, folderId),
+        updatedAt: new Date().toISOString(),
+      }
+    }),
+    updatedAt: new Date().toISOString(),
+  }
+}
+
+export function renameFolderInCollection(
+  workspace: Workspace,
+  collectionId: string,
+  folderId: string,
+  newName: string
+): Workspace {
+  return {
+    ...workspace,
+    collections: workspace.collections.map((col) => {
+      if (col.id !== collectionId) return col
+      
+      return {
+        ...col,
+        folders: updateFolderRecursive(col.folders, folderId, (folder) => ({
+          ...folder,
+          name: newName,
+        })),
+        updatedAt: new Date().toISOString(),
+      }
+    }),
+    updatedAt: new Date().toISOString(),
+  }
+}
+
 // ============================================================================
 // Saved Request Management
 // ============================================================================
@@ -495,7 +552,7 @@ export function addToHistory(
   
   return {
     ...workspace,
-    requestHistory: [historyEntry, ...workspace.requestHistory].slice(0, 100), // Keep last 100
+    requestHistory: [historyEntry, ...workspace.requestHistory].slice(0, 30), // Keep last 30
     updatedAt: new Date().toISOString(),
   }
 }

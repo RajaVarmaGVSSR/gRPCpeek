@@ -45,7 +45,7 @@ export function ServicesList({ services, onMethodClick }: ServicesListProps) {
                   settingsButton.click()
                 }
               }}
-              className="inline-flex items-center gap-2 rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground transition-colors hover:bg-primary/90"
+              className="inline-flex items-center gap-2 rounded bg-primary px-4 py-2 text-sm font-medium text-primary-foreground transition-colors hover:bg-primary/90"
             >
               ⚙️ Open Workspace Settings
             </button>

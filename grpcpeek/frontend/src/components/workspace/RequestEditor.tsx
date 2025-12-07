@@ -145,6 +145,17 @@ export function RequestEditor({
   }
 
   const handleServiceChange = (serviceName: string) => {
+    // Handle clearing the service
+    if (!serviceName) {
+      onUpdate({
+        service: '',
+        method: '',
+        name: 'New Request',
+        isDirty: true,
+      })
+      return
+    }
+
     const newService = services.find(s => s.name === serviceName)
     if (!newService) return
 
@@ -163,6 +174,16 @@ export function RequestEditor({
   }
 
   const handleMethodChange = (methodName: string) => {
+    // Handle clearing the method
+    if (!methodName) {
+      onUpdate({
+        method: '',
+        name: tab.service ? tab.service : 'New Request',
+        isDirty: true,
+      })
+      return
+    }
+
     const method = availableMethods.find(m => m.name === methodName)
     if (!method) return
 
@@ -214,11 +235,14 @@ export function RequestEditor({
               {services.length === 0 ? (
                 <option value="">No services available</option>
               ) : (
-                services.map(service => (
-                  <option key={service.name} value={service.name}>
-                    {service.name}
-                  </option>
-                ))
+                <>
+                  <option value="">Select service...</option>
+                  {services.map(service => (
+                    <option key={service.name} value={service.name}>
+                      {service.name}
+                    </option>
+                  ))}
+                </>
               )}
             </Select>
           </div>
@@ -235,12 +259,15 @@ export function RequestEditor({
               {availableMethods.length === 0 ? (
                 <option value="">No methods available</option>
               ) : (
-                availableMethods.map(method => (
-                  <option key={method.name} value={method.name}>
-                    {method.name}
-                    <span className="text-muted-foreground"> • {method.methodType}</span>
-                  </option>
-                ))
+                <>
+                  <option value="">Select method...</option>
+                  {availableMethods.map(method => (
+                    <option key={method.name} value={method.name}>
+                      {method.name}
+                      <span className="text-muted-foreground"> • {method.methodType}</span>
+                    </option>
+                  ))}
+                </>
               )}
             </Select>
           </div>

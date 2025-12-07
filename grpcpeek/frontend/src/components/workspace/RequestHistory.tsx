@@ -28,7 +28,7 @@ export function RequestHistory({ history, onRequestClick }: RequestHistoryProps)
           <button
             key={entry.id}
             onClick={() => onRequestClick(entry)}
-            className="flex w-full flex-col items-start gap-1 rounded-xl border border-border/70 bg-surface p-3 text-left transition-colors hover:border-focus/60 hover:bg-surface-muted/40"
+            className="flex w-full flex-col items-start gap-1 rounded border border-border/70 bg-surface p-3 text-left transition-colors hover:border-focus/60 hover:bg-surface-muted/40"
           >
             <div className="flex w-full items-center justify-between gap-2">
               <div className="text-sm font-medium text-foreground">{displayName}</div>

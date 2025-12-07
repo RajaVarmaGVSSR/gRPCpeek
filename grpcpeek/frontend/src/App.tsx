@@ -14,6 +14,7 @@ import { useWorkspaceManager } from './hooks/useWorkspaceManager'
 import { useRequestManager } from './hooks/useRequestManager'
 import { useToast } from './contexts/ToastContext'
 import {
+  useModal,
   useGlobalVariablesModal,
   useKeyboardShortcutsModal,
   useCommandPalette,
@@ -28,6 +29,7 @@ function App() {
   const { showToast } = useToast()
   
   // Modal hooks (from centralized ModalContext)
+  const { openModal } = useModal()
   const globalVariablesModal = useGlobalVariablesModal()
   const keyboardShortcutsModal = useKeyboardShortcutsModal()
   const commandPalette = useCommandPalette()
@@ -39,7 +41,8 @@ function App() {
   const requestManager = useRequestManager(
     workspaceManager.workspace,
     workspaceManager.setWorkspace,
-    showToast
+    showToast,
+    openModal
   )
   const setServices = requestManager.setServices
   const hasEnabledImportPaths = workspaceManager.workspace.importPaths.some((ip) => ip.enabled)
@@ -47,9 +50,41 @@ function App() {
   // UI state
   const [sidebarView, setSidebarView] = useState<SidebarView>('services')
   const [isSidebarOpen, setIsSidebarOpen] = useState<boolean>(true)
+  const [sidebarWidth, setSidebarWidth] = useState<number>(() => {
+    const saved = localStorage.getItem('sidebarWidth')
+    return saved ? parseInt(saved, 10) : 280
+  })
+  const [isResizing, setIsResizing] = useState<boolean>(false)
   const [userSettings, setUserSettings] = useState<UserSettings>(() => loadUserSettings())
   const [isParsingProtos, setIsParsingProtos] = useState(false)
   const [parsedWorkspaceId, setParsedWorkspaceId] = useState<string | null>(null)
+
+  // Sidebar resize handler
+  useEffect(() => {
+    if (!isResizing) return
+
+    const handleMouseMove = (e: MouseEvent) => {
+      const newWidth = Math.max(200, Math.min(600, e.clientX))
+      setSidebarWidth(newWidth)
+    }
+
+    const handleMouseUp = () => {
+      setIsResizing(false)
+    }
+
+    document.addEventListener('mousemove', handleMouseMove)
+    document.addEventListener('mouseup', handleMouseUp)
+
+    return () => {
+      document.removeEventListener('mousemove', handleMouseMove)
+      document.removeEventListener('mouseup', handleMouseUp)
+    }
+  }, [isResizing])
+
+  // Save sidebar width to localStorage
+  useEffect(() => {
+    localStorage.setItem('sidebarWidth', sidebarWidth.toString())
+  }, [sidebarWidth])
 
   // Apply user settings to root element
   useEffect(() => {
@@ -340,9 +375,10 @@ function App() {
         {/* Sidebar - Fixed to left edge */}
         <div
           className={`
-            fixed inset-y-0 left-0 top-[60px] z-30 w-[280px] transform transition-transform duration-300 lg:relative lg:top-0 lg:z-auto lg:translate-x-0
+            fixed inset-y-0 left-0 top-[60px] z-30 transform transition-transform duration-300 lg:relative lg:top-0 lg:z-auto lg:translate-x-0
             ${isSidebarOpen ? 'translate-x-0' : '-translate-x-full'}
           `}
+          style={{ width: isSidebarOpen ? `${sidebarWidth}px` : '0px' }}
         >
             {/* Mobile overlay backdrop */}
             {isSidebarOpen && (
@@ -359,12 +395,32 @@ function App() {
                 view={sidebarView}
                 onViewChange={setSidebarView}
                 services={requestManager.services}
-                savedRequests={requestManager.allSavedRequests}
+                collections={workspaceManager.workspace.collections}
                 history={workspaceManager.workspace.requestHistory}
                 onMethodClick={requestManager.handleMethodClick}
                 onSavedRequestClick={requestManager.handleLoadRequest}
                 onSavedRequestDelete={requestManager.handleDeleteRequest}
+                onSavedRequestRename={requestManager.handleRenameRequest}
                 onHistoryClick={requestManager.handleLoadRequest}
+                onCreateCollection={workspaceManager.handleCreateCollection}
+                onRenameCollection={workspaceManager.handleRenameCollection}
+                onDeleteCollection={workspaceManager.handleDeleteCollection}
+                onCreateFolder={workspaceManager.handleCreateFolder}
+                onRenameFolder={workspaceManager.handleRenameFolder}
+                onDeleteFolder={workspaceManager.handleDeleteFolder}
+                onCreateRequestInCollection={requestManager.handleCreateRequestInCollection}
+              />
+              
+              {/* Resize handle - only on desktop */}
+              <div
+                className="hidden lg:block absolute right-0 top-0 bottom-0 w-1 cursor-col-resize hover:bg-primary/50 transition-colors"
+                onMouseDown={(e) => {
+                  e.preventDefault()
+                  setIsResizing(true)
+                }}
+                style={{
+                  backgroundColor: isResizing ? 'rgb(var(--primary) / 0.5)' : 'transparent'
+                }}
               />
             </div>
           </div>

@@ -19,7 +19,7 @@ export function ClientStreamingEditor({
   messages,
   onUpdate,
   onSendMessage,
-  onFinishStreaming,
+  onFinishStreaming: _onFinishStreaming,
   streamConnectionOpen,
   isLoading,
   variableContext,

@@ -9,6 +9,7 @@ export type ModalType =
   | 'settings'
   | 'createWorkspace'
   | 'workspaceSettings'
+  | 'saveRequest'
 
 interface ModalContextType {
   openModal: (type: ModalType, props?: Record<string, any>) => void

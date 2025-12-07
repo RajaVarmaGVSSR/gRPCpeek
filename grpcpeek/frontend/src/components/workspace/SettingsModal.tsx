@@ -5,7 +5,7 @@
  * - Theme selection (light/dark/auto)
  * - Font size preferences
  * - Default environment
- * - Auto-save toggle
+ * - Compact mode toggle
  * - Persist to localStorage
  */
 
@@ -16,7 +16,6 @@ export interface UserSettings {
   theme: 'light' | 'dark' | 'auto'
   fontSize: 'small' | 'medium' | 'large'
   defaultEnvironmentId: string | null
-  autoSave: boolean
   compactMode: boolean
 }
 
@@ -57,7 +56,6 @@ export function SettingsModal({
       theme: 'auto',
       fontSize: 'medium',
       defaultEnvironmentId: null,
-      autoSave: true,
       compactMode: false,
     }
     setLocalSettings(defaultSettings)
@@ -149,13 +147,13 @@ export function SettingsModal({
                 onClick={() =>
                   setLocalSettings({ ...localSettings, compactMode: !localSettings.compactMode })
                 }
-                className={`relative h-6 w-11 rounded-full transition-colors ${
-                  localSettings.compactMode ? 'bg-primary' : 'bg-border'
+                className={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer items-center rounded-full transition-colors ${
+                  localSettings.compactMode ? 'bg-primary' : 'bg-muted-foreground/30'
                 }`}
               >
                 <span
-                  className={`absolute top-0.5 h-5 w-5 rounded-full bg-white shadow-sm transition-transform ${
-                    localSettings.compactMode ? 'translate-x-5' : 'translate-x-0.5'
+                  className={`pointer-events-none inline-block h-5 w-5 rounded-full bg-white shadow-md ring-0 transition-transform ${
+                    localSettings.compactMode ? 'translate-x-[22px]' : 'translate-x-[2px]'
                   }`}
                 />
               </button>
@@ -191,33 +189,6 @@ export function SettingsModal({
               <p className="text-xs text-muted-foreground">
                 Set the default environment to use on startup
               </p>
-            </div>
-
-            {/* Auto-save */}
-            <div className="flex items-center justify-between rounded-lg border border-border p-4">
-              <div className="space-y-1">
-                <Label htmlFor="auto-save">Auto-save Requests</Label>
-                <p className="text-xs text-muted-foreground">
-                  Automatically save request changes
-                </p>
-              </div>
-              <button
-                id="auto-save"
-                role="switch"
-                aria-checked={localSettings.autoSave}
-                onClick={() =>
-                  setLocalSettings({ ...localSettings, autoSave: !localSettings.autoSave })
-                }
-                className={`relative h-6 w-11 rounded-full transition-colors ${
-                  localSettings.autoSave ? 'bg-primary' : 'bg-border'
-                }`}
-              >
-                <span
-                  className={`absolute top-0.5 h-5 w-5 rounded-full bg-white shadow-sm transition-transform ${
-                    localSettings.autoSave ? 'translate-x-5' : 'translate-x-0.5'
-                  }`}
-                />
-              </button>
             </div>
           </section>
 
@@ -299,7 +270,6 @@ export function loadUserSettings(): UserSettings {
     theme: 'auto',
     fontSize: 'medium',
     defaultEnvironmentId: null,
-    autoSave: true,
     compactMode: false,
   }
 }
