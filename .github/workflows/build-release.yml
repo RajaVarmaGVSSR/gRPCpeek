@@ -9,7 +9,50 @@ on:
   workflow_dispatch: # Allows manual trigger from GitHub UI
 
 jobs:
+  bump-version:
+    runs-on: ubuntu-latest
+    outputs:
+      new_version: ${{ steps.bump.outputs.new_version }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Auto-increment patch version
+        id: bump
+        run: |
+          # Read current version from tauri.conf.json
+          CURRENT_VERSION=$(grep -oP '"version":\s*"\K[^"]+' grpcpeek/src-tauri/tauri.conf.json)
+          echo "Current version: $CURRENT_VERSION"
+          
+          # Split version into major.minor.patch
+          IFS='.' read -r MAJOR MINOR PATCH <<< "$CURRENT_VERSION"
+          
+          # Increment patch version
+          NEW_PATCH=$((PATCH + 1))
+          NEW_VERSION="${MAJOR}.${MINOR}.${NEW_PATCH}"
+          echo "New version: $NEW_VERSION"
+          
+          # Update tauri.conf.json
+          sed -i "s/\"version\": \"$CURRENT_VERSION\"/\"version\": \"$NEW_VERSION\"/" grpcpeek/src-tauri/tauri.conf.json
+          
+          # Update package.json
+          sed -i "s/\"version\": \"$CURRENT_VERSION\"/\"version\": \"$NEW_VERSION\"/" grpcpeek/frontend/package.json
+          
+          # Commit the version bump
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add grpcpeek/src-tauri/tauri.conf.json grpcpeek/frontend/package.json
+          git commit -m "chore: auto-bump version to $NEW_VERSION [skip ci]"
+          git push
+          
+          # Output for next job
+          echo "new_version=$NEW_VERSION" >> $GITHUB_OUTPUT
+
   build:
+    needs: bump-version
     strategy:
       fail-fast: false
       matrix:
@@ -20,6 +63,8 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          ref: ${{ github.ref }}
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -67,21 +112,21 @@ jobs:
         shell: pwsh
         run: |
           cd grpcpeek/src-tauri/target/release
-          Compress-Archive -Path grpcpeek.exe -DestinationPath ../../../gRPCpeek-${{ github.ref_name }}-windows-portable.zip
+          Compress-Archive -Path grpcpeek.exe -DestinationPath ../../../gRPCpeek-${{ needs.bump-version.outputs.new_version }}-windows-portable.zip
 
       # Package standalone executable for macOS
       - name: Package macOS Portable (ZIP)
         if: matrix.platform == 'macos-latest'
         run: |
           cd grpcpeek/src-tauri/target/universal-apple-darwin/release/bundle/macos
-          zip -r ../../../../../../gRPCpeek-${{ github.ref_name }}-macos-portable.zip gRPCpeek.app
+          zip -r ../../../../../../gRPCpeek-${{ needs.bump-version.outputs.new_version }}-macos-portable.zip gRPCpeek.app
 
       # Package standalone executable for Linux
       - name: Package Linux Portable (tar.gz)
         if: matrix.platform == 'ubuntu-20.04'
         run: |
           cd grpcpeek/src-tauri/target/release
-          tar -czf ../../../gRPCpeek-${{ github.ref_name }}-linux-portable.tar.gz grpcpeek
+          tar -czf ../../../gRPCpeek-${{ needs.bump-version.outputs.new_version }}-linux-portable.tar.gz grpcpeek
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
@@ -94,7 +139,7 @@ jobs:
           retention-days: 7
 
   create-release:
-    needs: build
+    needs: [bump-version, build]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -104,11 +149,31 @@ jobs:
         with:
           path: artifacts
 
+      - name: Display structure of downloaded files
+        run: ls -R artifacts
+
       - name: Create Release
         uses: softprops/action-gh-release@v1
-        if: startsWith(github.ref, 'refs/tags/')
         with:
           draft: true
+          tag_name: v${{ needs.bump-version.outputs.new_version }}
+          name: 'gRPCpeek v${{ needs.bump-version.outputs.new_version }}'
+          body: |
+            ## gRPCpeek v${{ needs.bump-version.outputs.new_version }}
+            
+            ### Installation
+            
+            **Portable Executables** (no installation required) ⭐:
+            - **Windows**: Download the `-windows-portable.zip`, extract, and run `grpcpeek.exe`
+            - **macOS**: Download the `-macos-portable.zip`, extract, run `xattr -cr gRPCpeek.app`, then open
+            - **Linux**: Download the `.AppImage`, make it executable (`chmod +x`), and run
+            
+            **Traditional Installers**:
+            - Windows: `.msi` or `-setup.exe`
+            - macOS: `.dmg`
+            - Linux: `.deb`
+            
+            ⚠️ **Note**: These builds are unsigned. Windows may show SmartScreen warnings, and macOS will require Gatekeeper bypass.
           files: artifacts/**/*
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
