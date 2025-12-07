@@ -152,6 +152,24 @@ jobs:
       - name: Display structure of downloaded files
         run: ls -R artifacts
 
+      - name: Prepare release files
+        run: |
+          mkdir -p release-files
+          # Copy Windows installers and portable
+          find artifacts/windows-latest-build -name "*.msi" -exec cp {} release-files/ \;
+          find artifacts/windows-latest-build -name "*-setup.exe" -exec cp {} release-files/ \;
+          find artifacts/windows-latest-build -name "*-windows-portable.zip" -exec cp {} release-files/ \;
+          # Copy macOS installers and portable
+          find artifacts/macos-latest-build -name "*.dmg" -exec cp {} release-files/ \;
+          find artifacts/macos-latest-build -name "*-macos-portable.zip" -exec cp {} release-files/ \;
+          # Copy Linux installers and portable
+          find artifacts/ubuntu-latest-build -name "*.AppImage" -exec cp {} release-files/ \;
+          find artifacts/ubuntu-latest-build -name "*.deb" -exec cp {} release-files/ \;
+          find artifacts/ubuntu-latest-build -name "*-linux-portable.tar.gz" -exec cp {} release-files/ \;
+          # List what we're uploading
+          echo "Files to upload:"
+          ls -lh release-files/
+
       - name: Create Release
         uses: softprops/action-gh-release@v1
         with:
@@ -174,6 +192,6 @@ jobs:
             - Linux: `.deb`
             
             ⚠️ **Note**: These builds are unsigned. Windows may show SmartScreen warnings, and macOS will require Gatekeeper bypass.
-          files: artifacts/**/*
+          files: release-files/*
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
