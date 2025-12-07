@@ -87,7 +87,7 @@ jobs:
           tar -czf ../../../gRPCpeek-${{ github.ref_name }}-linux-portable.tar.gz grpcpeek
 
       - name: Upload artifacts
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.platform }}-build
           path: |
