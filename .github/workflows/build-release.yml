@@ -1,0 +1,97 @@
+name: Build Release
+
+on:
+  push:
+    tags:
+      - 'v*' # Triggers on version tags like v1.0.0
+    branches:
+      - 'release/**' # Triggers on release branches like release/0.1.0
+  workflow_dispatch: # Allows manual trigger from GitHub UI
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        platform: [macos-latest, ubuntu-20.04, windows-latest]
+
+    runs-on: ${{ matrix.platform }}
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: grpcpeek/frontend/package-lock.json
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Rust cache
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: './grpcpeek/src-tauri -> target'
+
+      - name: Install dependencies (Ubuntu only)
+        if: matrix.platform == 'ubuntu-20.04'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.0-dev libayatana-appindicator3-dev librsvg2-dev
+
+      - name: Install frontend dependencies
+        working-directory: grpcpeek/frontend
+        run: npm ci
+
+      - name: Build frontend
+        working-directory: grpcpeek/frontend
+        run: npm run build
+
+      - name: Build Tauri app
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          projectPath: grpcpeek
+          tagName: ${{ github.ref_name }}
+          releaseName: 'gRPCpeek ${{ github.ref_name }}'
+          releaseBody: 'See the assets to download and install this version.'
+          releaseDraft: true
+          prerelease: false
+          # No code signing for now
+          args: ${{ matrix.platform == 'macos-latest' && '--target universal-apple-darwin' || '' }}
+
+      # Package standalone executable for Windows
+      - name: Package Windows Portable (ZIP)
+        if: matrix.platform == 'windows-latest'
+        shell: pwsh
+        run: |
+          cd grpcpeek/src-tauri/target/release
+          Compress-Archive -Path grpcpeek.exe -DestinationPath ../../../gRPCpeek-${{ github.ref_name }}-windows-portable.zip
+
+      # Package standalone executable for macOS
+      - name: Package macOS Portable (ZIP)
+        if: matrix.platform == 'macos-latest'
+        run: |
+          cd grpcpeek/src-tauri/target/universal-apple-darwin/release/bundle/macos
+          zip -r ../../../../../../gRPCpeek-${{ github.ref_name }}-macos-portable.zip gRPCpeek.app
+
+      # Package standalone executable for Linux
+      - name: Package Linux Portable (tar.gz)
+        if: matrix.platform == 'ubuntu-20.04'
+        run: |
+          cd grpcpeek/src-tauri/target/release
+          tar -czf ../../../gRPCpeek-${{ github.ref_name }}-linux-portable.tar.gz grpcpeek
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v3
+        with:
+          name: ${{ matrix.platform }}-build
+          path: |
+            grpcpeek/src-tauri/target/release/bundle/**/*
+            grpcpeek/gRPCpeek-*.zip
+            grpcpeek/gRPCpeek-*.tar.gz
+          retention-days: 7

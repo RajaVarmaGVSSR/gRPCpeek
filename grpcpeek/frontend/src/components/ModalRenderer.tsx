@@ -6,6 +6,7 @@ import { CommandPalette } from './workspace/CommandPalette'
 import { SettingsModal } from './workspace/SettingsModal'
 import { CreateWorkspaceModal } from './workspace/CreateWorkspaceModal'
 import { WorkspaceSettingsModal } from './workspace/WorkspaceSettingsModal'
+import { SaveRequestModal } from './workspace/SaveRequestModal'
 
 /**
  * Central modal renderer - handles all app-wide modals
@@ -90,6 +91,18 @@ export function ModalRenderer() {
             isOpen={true}
             {...props as any}
             onClose={() => closeModal('workspaceSettings')}
+          />
+        ) : null
+      })()}
+
+      {/* Save Request Modal */}
+      {isModalOpen('saveRequest') && (() => {
+        const props = getModalProps('saveRequest')
+        return props ? (
+          <SaveRequestModal
+            isOpen={true}
+            {...props as any}
+            onClose={() => closeModal('saveRequest')}
           />
         ) : null
       })()}

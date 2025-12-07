@@ -24,10 +24,12 @@ export function ImportPathManager({
 }: ImportPathManagerProps) {
   const [isAdding, setIsAdding] = useState(false)
   const [isReparsing, setIsReparsing] = useState(false)
+  const [error, setError] = useState<string | null>(null)
 
   const handleAddFile = async () => {
     try {
       setIsAdding(true)
+      setError(null)
       console.log('Opening file picker...')
       const selected = await open({
         title: 'Select Proto File',
@@ -48,7 +50,7 @@ export function ImportPathManager({
       }
     } catch (error) {
       console.error('Failed to open file picker:', error)
-      alert(`Error opening file picker: ${error}`)
+      setError(`Error opening file picker: ${error}`)
     } finally {
       setIsAdding(false)
     }
@@ -57,6 +59,7 @@ export function ImportPathManager({
   const handleAddDirectory = async () => {
     try {
       setIsAdding(true)
+      setError(null)
       console.log('Opening directory picker...')
       const selected = await open({
         title: 'Select Directory',
@@ -71,7 +74,7 @@ export function ImportPathManager({
       }
     } catch (error) {
       console.error('Failed to open directory picker:', error)
-      alert(`Error opening directory picker: ${error}`)
+      setError(`Error opening directory picker: ${error}`)
     } finally {
       setIsAdding(false)
     }
@@ -107,6 +110,19 @@ export function ImportPathManager({
 
   return (
     <div className="space-y-4">
+      {/* Error display */}
+      {error && (
+        <div className="rounded border border-red-300 bg-red-50 px-3 py-2 text-sm text-red-600 dark:border-red-700 dark:bg-red-950/50 dark:text-red-400 flex justify-between items-center">
+          <span>{error}</span>
+          <button 
+            onClick={() => setError(null)} 
+            className="text-red-500 hover:text-red-700"
+          >
+            ✕
+          </button>
+        </div>
+      )}
+
       {/* Header with actions */}
       <div className="flex items-center justify-between">
         <div>

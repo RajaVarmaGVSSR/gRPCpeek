@@ -9,57 +9,27 @@ Our goal is to deliver a Postman-class workflow for gRPC without the bloat:
 - Configure environments (hosts, ports, TLS/auth settings) and reuse them across requests.
 - Craft requests with structured metadata, send them instantly, and inspect responses in detail.
 
-## Current Features
+## 📦 Installation
 
-### Core Functionality ✅
-- **Cross-platform desktop shell** powered by Tauri with Rust async runtime (`tokio`)
-- **Proto import & request execution** using the `tonic` gRPC stack—load a proto, invoke RPCs, and inspect responses
-- **React/Vite frontend** with modern TypeScript and Tailwind CSS for rapid UI development
-- **Unified dev workflow** via `cargo tauri dev`, coordinating the frontend dev server and native shell with hot reload
+### Download Pre-Built Releases (Recommended)
 
-### Phase 3: Professional UI ✅ (Complete)
-- **Modern Design System**: Minimalist aesthetic with custom color tokens and CSS variables
-- **Workspace Management**: Multi-environment support with host/port configuration
-- **Request Tabs**: Multi-tab interface for parallel testing
-- **Service Browser**: Collapsible tree view with method type badges
-- **Request/Response Panels**: Side-by-side split view with JSON editors
-- **Streaming Support**: Real-time server streaming message display
-- **Global Variables**: Workspace-level key-value pairs
-- **Request History**: Automatic tracking of all requests
-- **Collections**: Save and organize requests
-- **Keyboard Shortcuts**: Ctrl+Enter, Ctrl+S, Ctrl+W, Ctrl+Tab, etc.
-- **Bundle Size**: 203.57 KB (59.99 KB gzipped)
+Get the latest stable version from our [**Releases page**](https://github.com/RajaVarmaGVSSR/gRPCpeek/releases).
 
-### Phase 4: UX Enhancements ✅ (Complete)
-- **Toast Notifications**: Instant feedback for all actions (copy, save, errors)
-- **Command Palette**: Ctrl+K quick navigation with fuzzy search
-- **Enhanced Animations**: Smooth transitions, button effects, modal entrance animations
-- **Loading Skeletons**: Professional loading states for services and responses
-- **Responsive Design**: Mobile-first layout with hamburger menu and collapsible sidebar
-- **User Settings**: Customizable theme (light/dark/auto), font size, compact mode
-- **Settings Persistence**: All preferences saved to localStorage
-- **Bundle Size**: 219.09 KB (63.65 KB gzipped)
+**Portable Executables** (no installation required) ⭐:
+- **Windows**: Download `gRPCpeek-vX.X.X-windows-portable.zip`, extract, and run `grpcpeek.exe`
+- **macOS**: Download `gRPCpeek-vX.X.X-macos-portable.zip`, extract, run `xattr -cr gRPCpeek.app`, then open the app
+- **Linux**: Download `grpcpeek_X.X.X_amd64.AppImage`, make it executable (`chmod +x`), and run
 
-**Total Features**: 25+ implemented features across UI, UX, and backend integration
+**Traditional Installers**:
+- Windows: `.msi` or `-setup.exe`
+- macOS: `.dmg` 
+- Linux: `.deb`
 
-## Roadmap / Upcoming Features
+> ⚠️ **Note**: Our builds are currently unsigned. Windows may show SmartScreen warnings, and macOS will require Gatekeeper bypass. This is normal for free, open-source builds.
 
-### Phase 5: Advanced Features (Planned)
-- **Drag & Drop**: Intuitive proto file upload and request organization
-- **Syntax Highlighting**: Code highlighting for JSON request/response bodies
-- **Auto-complete**: IntelliSense for message types in request editor
-- **Collections UI**: Visual folder management for saved requests
-- **Export/Import**: Share workspaces and collections between team members
-- **Request Diffing**: Compare requests side-by-side
+### Build from Source
 
-### Backend Enhancements (Planned)
-- **Proto workspace roots** to resolve imports recursively and auto-discover services/methods
-- **TLS/SSL Support**: Certificate handling for secure connections
-- **Advanced Auth**: OAuth, JWT, API keys
-- **Connection Pooling**: Efficient connection management
-- **Streaming Improvements**: Client and bidirectional streaming support
-
-Track progress or propose additions through issues and discussions. See `PHASE4_COMPLETE.md` and `PHASE4_SUMMARY.md` for detailed completion reports.
+Want to build locally or contribute to development? See the [Development Setup](#getting-started) section below.
 
 ## Repository Layout
 
@@ -72,6 +42,10 @@ grpcpeek/
 ```
 
 ## Getting Started
+
+> 💡 **Just want to use gRPCpeek?** Download a pre-built release from the [Installation](#-installation) section above.
+
+This section is for developers who want to build from source or contribute to the project.
 
 ### Prerequisites
 
@@ -113,7 +87,7 @@ The build orchestrates a frontend production bundle and packages platform-specif
 
 We welcome contributions of all sizes. To get started:
 
-1. Fork the repository and create a topic branch from `recover` (or the current default branch).
+1. Fork the repository and create a topic branch from `main` (or the current default branch).
 2. Run `cargo fmt` and `npm run lint` before submitting PRs.
 3. Add tests or sample usage when introducing new behavior.
 4. Open a pull request describing the motivation, implementation details, and testing notes.

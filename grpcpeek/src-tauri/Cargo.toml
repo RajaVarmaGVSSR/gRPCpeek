@@ -46,3 +46,11 @@ lazy_static = "1.4"
 # this feature is used for production builds or when `devPath` points to the filesystem
 # DO NOT REMOVE!!
 custom-protocol = ["tauri/custom-protocol"]
+
+[profile.release]
+# Optimize for binary size and performance
+opt-level = "z"     # Optimize for size
+lto = true          # Enable Link Time Optimization
+codegen-units = 1   # Better optimization, slower compile
+strip = true        # Remove debug symbols
+panic = "abort"     # Smaller binary size

@@ -1,4 +1,5 @@
 import { useState, useEffect, type KeyboardEvent } from 'react'
+import { createPortal } from 'react-dom'
 import { Button, Input, Label, Card } from '../ui'
 import { ImportPathManager } from './ImportPathManager'
 import { EnvironmentEditorModal } from './EnvironmentEditorModal'
@@ -51,6 +52,7 @@ export function WorkspaceSettingsModal({
   const [activeTab, setActiveTab] = useState<'general' | 'imports' | 'globals' | 'environments'>(initialTab)
   const [environmentModalEnv, setEnvironmentModalEnv] = useState<Environment | null>(null)
   const [isCreatingNewEnvironment, setIsCreatingNewEnvironment] = useState(false)
+  const [deleteConfirm, setDeleteConfirm] = useState<{ id: string; name: string } | null>(null)
 
   // Update internal state when workspace prop changes (e.g., after creating/editing environments)
   useEffect(() => {
@@ -87,12 +89,8 @@ export function WorkspaceSettingsModal({
   }
 
   const handleEnvironmentRemoval = (environmentId: string, environmentName: string): boolean => {
-    if (!window.confirm(`Delete environment "${environmentName}"?`)) {
-      return false
-    }
-
-    onEnvironmentDelete(environmentId)
-    return true
+    setDeleteConfirm({ id: environmentId, name: environmentName })
+    return false // Return false to prevent immediate deletion; will be handled via modal confirm
   }
 
   return (
@@ -468,6 +466,36 @@ export function WorkspaceSettingsModal({
             setIsCreatingNewEnvironment(false)
           }}
         />
+      )}
+
+      {/* Delete Environment Confirm Modal */}
+      {deleteConfirm && createPortal(
+        <div className="fixed inset-0 z-[9999] flex items-center justify-center">
+          <div className="absolute inset-0 bg-black/50" onClick={() => setDeleteConfirm(null)} />
+          <div className="relative z-10 w-full max-w-sm mx-4 rounded-xl border border-border bg-surface p-5 shadow-xl">
+            <h3 className="mb-2 text-base font-semibold text-foreground">Delete Environment</h3>
+            <p className="mb-4 text-sm text-muted-foreground">
+              Are you sure you want to delete "{deleteConfirm.name}"?
+            </p>
+            <div className="flex justify-end gap-2">
+              <Button variant="ghost" type="button" onClick={() => setDeleteConfirm(null)} size="sm">
+                Cancel
+              </Button>
+              <Button 
+                type="button" 
+                onClick={() => {
+                  onEnvironmentDelete(deleteConfirm.id)
+                  setDeleteConfirm(null)
+                }} 
+                size="sm"
+                className="bg-red-600 hover:bg-red-700 text-white"
+              >
+                Delete
+              </Button>
+            </div>
+          </div>
+        </div>,
+        document.body
       )}
     </div>
   )

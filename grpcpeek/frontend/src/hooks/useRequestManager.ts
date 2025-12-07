@@ -8,7 +8,7 @@ import {
   addToHistory as addToHistoryV2,
   createSavedRequest,
   createCollection,
-  addCollection,
+  createFolder,
   saveServicesToWorkspace,
   saveTabsToWorkspace,
 } from '../lib/workspace'
@@ -41,7 +41,9 @@ export interface UseRequestManagerReturn {
   handleSaveRequest: () => void
   handleLoadRequest: (request: SavedRequest | HistoryEntry) => void
   handleDeleteRequest: (requestId: string) => void
+  handleRenameRequest: (requestId: string, newName: string) => void
   handleMethodClick: (service: string, method: string) => void
+  handleCreateRequestInCollection: (collectionId: string, folderId: string | undefined, service: string, method: string) => void
   handleGenerateSample: () => Promise<void>
 
   // Client streaming operations
@@ -58,7 +60,8 @@ export interface UseRequestManagerReturn {
 export function useRequestManager(
   workspace: Workspace,
   setWorkspace: React.Dispatch<React.SetStateAction<Workspace>>,
-  showToast: (message: string, type: 'success' | 'error' | 'info') => void
+  showToast: (message: string, type: 'success' | 'error' | 'info') => void,
+  openModal: (type: any, props?: Record<string, any>) => void
 ): UseRequestManagerReturn {
   const [services, setServices] = useState<Service[]>([])
   const [tabs, setTabs] = useState<RequestTab[]>([])
@@ -181,13 +184,43 @@ export function useRequestManager(
   const allSavedRequests = getAllSavedRequests()
 
   const createNewTab = useCallback((service: string, method: string) => {
+    // Use first environment as default, or undefined if no environments exist
+    const defaultEnv = workspace.environments.length > 0 ? workspace.environments[0] : undefined
+
+    // Handle empty service/method (name-only flow)
+    if (!service || !method) {
+      const tabId = `empty-${Date.now()}`
+      const newTab: RequestTab = {
+        id: tabId,
+        name: 'New Request',
+        service: '',
+        method: '',
+        methodType: 'unary',
+        requestBody: '',
+        selectedEnvironmentId: defaultEnv?.id,
+        metadata: {},
+        auth: defaultEnv?.auth ? { ...defaultEnv.auth } : { type: 'none' },
+        tls: defaultEnv?.tls ? { ...defaultEnv.tls } : { enabled: false },
+        response: '',
+        responseMetadata: {},
+        streamingMessages: [],
+        status: null,
+        duration: null,
+        responseSize: null,
+        isStreaming: false,
+        isLoading: false,
+        isDirty: false,
+        createdAt: new Date().toISOString(),
+      }
+      setTabs((prev) => [...prev, newTab])
+      setActiveTabId(tabId)
+      return
+    }
+
     const serviceObj = services.find((s) => s.name === service)
     const methodObj = serviceObj?.methods.find((m) => m.name === method)
     
     if (!methodObj) return
-
-    // Use first environment as default, or undefined if no environments exist
-    const defaultEnv = workspace.environments.length > 0 ? workspace.environments[0] : undefined
 
     const tabId = `${service}.${method}-${Date.now()}`
     const newTab: RequestTab = {
@@ -475,8 +508,8 @@ export function useRequestManager(
         isStreaming: false, // Call is complete
       })
 
-      // Add to history
-      addToHistoryV2(workspace, {
+      // Add to history and update workspace
+      const updatedWorkspace = addToHistoryV2(workspace, {
         service: activeTab.service,
         method: activeTab.method,
         methodType: activeTab.methodType,
@@ -490,8 +523,8 @@ export function useRequestManager(
         environmentId: activeTab.selectedEnvironmentId || null,
       })
 
-      saveWorkspace(workspace)
-      setWorkspace({ ...workspace })
+      saveWorkspace(updatedWorkspace)
+      setWorkspace(updatedWorkspace)
     } catch (error) {
       const duration = Date.now() - startTime
       const errorMessage = error instanceof Error ? error.message : String(error)
@@ -535,36 +568,91 @@ export function useRequestManager(
   const handleSaveRequest = useCallback(() => {
     if (!activeTab) return
 
-    const requestName = prompt('Enter a name for this request:', `${activeTab.service}.${activeTab.method}`)
-    if (!requestName) return
+    // Open save modal with callback
+    openModal('saveRequest', {
+      workspace,
+      tab: activeTab,
+      onSave: (params: { 
+        name: string; 
+        collectionId: string; 
+        collectionName?: string;
+        folderId?: string;
+        folderName?: string;
+      }) => {
+        const { name, collectionId, collectionName, folderId, folderName } = params
 
-    const savedRequest = createSavedRequest(
-      requestName,
-      activeTab.service,
-      activeTab.method,
-      activeTab
-    )
+        // Create saved request
+        const savedRequest = createSavedRequest(name, activeTab.service, activeTab.method, activeTab)
 
-    // Find or create "My Requests" collection
-    let myRequestsCollection = workspace.collections.find((c) => c.name === 'My Requests')
-    
-    if (!myRequestsCollection) {
-      myRequestsCollection = createCollection('My Requests')
-      addCollection(workspace, myRequestsCollection)
-    }
+        // Handle new collection creation
+        if (collectionId === '__NEW__' && collectionName) {
+          const newCollection = createCollection(collectionName)
+          newCollection.requests.push(savedRequest)
+          workspace.collections.push(newCollection)
+        } else {
+          // Find target collection
+          const collection = workspace.collections.find((c) => c.id === collectionId)
+          if (!collection) {
+            showToast('Collection not found', 'error')
+            return
+          }
 
-    // Add request to collection
-    myRequestsCollection.requests.push(savedRequest)
+          // Handle new folder creation
+          if (folderId === '__NEW__' && folderName) {
+            const newFolder = createFolder(folderName)
+            newFolder.requests.push(savedRequest)
+            collection.folders.push(newFolder)
+          } else if (folderId) {
+            // Add to existing folder (recursive search)
+            const addToFolder = (folders: any[]): boolean => {
+              for (const folder of folders) {
+                if (folder.id === folderId) {
+                  folder.requests.push(savedRequest)
+                  return true
+                }
+                if (folder.folders && addToFolder(folder.folders)) {
+                  return true
+                }
+              }
+              return false
+            }
+            
+            if (!addToFolder(collection.folders)) {
+              // Folder not found, add to root
+              collection.requests.push(savedRequest)
+            }
+          } else {
+            // Add to root
+            collection.requests.push(savedRequest)
+          }
+        }
 
-    saveWorkspace(workspace)
-    setWorkspace({ ...workspace })
-    showToast(`Saved request: ${requestName}`, 'success')
-  }, [activeTab, workspace, setWorkspace, showToast])
+        // Update tab to link to saved request
+        setTabs((prevTabs) =>
+          prevTabs.map((tab) =>
+            tab.id === activeTab.id
+              ? { ...tab, savedRequestId: savedRequest.id, isDirty: false }
+              : tab
+          )
+        )
+
+        saveWorkspace(workspace)
+        setWorkspace({ ...workspace })
+        showToast(`Saved request: ${name}`, 'success')
+      },
+    })
+  }, [activeTab, workspace, setWorkspace, showToast, openModal])
 
   const handleLoadRequest = useCallback((request: SavedRequest | HistoryEntry) => {
     const isHistory = 'timestamp' in request
     const tabId = `${request.service}.${request.method}-${Date.now()}`
     
+    // For history entries, use the stored environmentId to restore the environment context
+    // Note: environmentId can be null (meaning no environment was selected when request was made)
+    const environmentId = isHistory 
+      ? (request as HistoryEntry).environmentId 
+      : undefined  // SavedRequest doesn't store environment - use current/default
+
     const newTab: RequestTab = {
       id: tabId,
       name: isHistory ? `[History] ${request.service}.${request.method}` : request.name,
@@ -584,6 +672,8 @@ export function useRequestManager(
       isLoading: false,
       isDirty: false,
       createdAt: new Date().toISOString(),
+      // Preserve null/undefined distinction - null means explicitly no env, undefined means not set
+      selectedEnvironmentId: environmentId ?? undefined,
     }
 
     setTabs((prev) => [...prev, newTab])
@@ -617,6 +707,31 @@ export function useRequestManager(
     showToast('Request deleted', 'info')
   }, [workspace, setWorkspace, showToast, removeSavedRequestFromFolders])
 
+  // Helper function to rename a request in nested folders
+  const renameRequestInFolders = useCallback((folders: any[], requestId: string, newName: string): any[] => {
+    return folders.map((folder) => ({
+      ...folder,
+      requests: folder.requests.map((r: any) => 
+        r.id === requestId ? { ...r, name: newName, updatedAt: new Date().toISOString() } : r
+      ),
+      folders: renameRequestInFolders(folder.folders || [], requestId, newName),
+    }))
+  }, [])
+
+  const handleRenameRequest = useCallback((requestId: string, newName: string) => {
+    workspace.collections = workspace.collections.map((collection) => ({
+      ...collection,
+      requests: collection.requests.map(r => 
+        r.id === requestId ? { ...r, name: newName, updatedAt: new Date().toISOString() } : r
+      ),
+      folders: renameRequestInFolders(collection.folders, requestId, newName),
+    }))
+
+    saveWorkspace(workspace)
+    setWorkspace({ ...workspace })
+    showToast('Request renamed', 'success')
+  }, [workspace, setWorkspace, showToast, renameRequestInFolders])
+
   const handleMethodClick = useCallback((service: string, method: string) => {
     const existingTab = tabs.find((t) => t.service === service && t.method === method)
     if (existingTab) {
@@ -625,6 +740,62 @@ export function useRequestManager(
       createNewTab(service, method)
     }
   }, [tabs, createNewTab])
+
+  const handleCreateRequestInCollection = useCallback((
+    collectionId: string,
+    folderId: string | undefined,
+    service: string,
+    method: string
+  ) => {
+    // If method is empty, service parameter contains the request name (name-only flow)
+    const isNameOnly = method === ''
+    const requestName = isNameOnly ? service : `${service}.${method}`
+    
+    // Create a new tab for the request (empty service/method for name-only)
+    createNewTab(isNameOnly ? '' : service, isNameOnly ? '' : method)
+    
+    // Immediately save it to the specified collection/folder
+    setTimeout(() => {
+      const newTab = tabs[tabs.length - 1]  // Get the newly created tab
+      if (newTab) {
+        const savedRequest = createSavedRequest(
+          requestName,
+          isNameOnly ? '' : service,
+          isNameOnly ? '' : method,
+          newTab
+        )
+        
+        const collection = workspace.collections.find((c) => c.id === collectionId)
+        if (collection) {
+          if (folderId) {
+            // Add to folder (recursive search)
+            const addToFolder = (folders: any[]): boolean => {
+              for (const folder of folders) {
+                if (folder.id === folderId) {
+                  folder.requests.push(savedRequest)
+                  return true
+                }
+                if (folder.folders && addToFolder(folder.folders)) {
+                  return true
+                }
+              }
+              return false
+            }
+            
+            if (!addToFolder(collection.folders)) {
+              collection.requests.push(savedRequest)
+            }
+          } else {
+            collection.requests.push(savedRequest)
+          }
+          
+          saveWorkspace(workspace)
+          setWorkspace({ ...workspace })
+          showToast(`Created request "${requestName}" in collection`, 'success')
+        }
+      }
+    }, 100)
+  }, [tabs, workspace, setWorkspace, showToast, createNewTab])
 
   const handleGenerateSample = useCallback(async () => {
     if (!activeTab) return
@@ -764,7 +935,9 @@ export function useRequestManager(
     handleSaveRequest,
     handleLoadRequest,
     handleDeleteRequest,
+    handleRenameRequest,
     handleMethodClick,
+    handleCreateRequestInCollection,
     handleGenerateSample,
 
     // Client streaming operations

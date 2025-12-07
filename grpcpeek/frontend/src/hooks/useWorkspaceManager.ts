@@ -18,6 +18,14 @@ import {
   addImportPath,
   removeImportPath,
   toggleImportPath,
+  createCollection,
+  addCollection,
+  updateCollection,
+  deleteCollection,
+  createFolder,
+  addFolderToCollection,
+  deleteFolderFromCollection,
+  renameFolderInCollection,
 } from '../lib/workspace'
 
 export interface UseWorkspaceManagerReturn {
@@ -52,6 +60,16 @@ export interface UseWorkspaceManagerReturn {
   handleImportPathAdd: (path: string, type: 'file' | 'directory') => void
   handleImportPathRemove: (id: string) => void
   handleImportPathToggle: (id: string) => void
+
+  // Collection operations
+  handleCreateCollection: (name: string) => void
+  handleRenameCollection: (collectionId: string, newName: string) => void
+  handleDeleteCollection: (collectionId: string) => void
+
+  // Folder operations
+  handleCreateFolder: (collectionId: string, name: string, parentFolderId?: string) => void
+  handleRenameFolder: (collectionId: string, folderId: string, newName: string) => void
+  handleDeleteFolder: (collectionId: string, folderId: string) => void
 
   // Low-level setters (for special cases)
   setWorkspace: React.Dispatch<React.SetStateAction<Workspace>>
@@ -210,6 +228,50 @@ export function useWorkspaceManager(): UseWorkspaceManagerReturn {
     setWorkspace(updated)
   }, [workspace])
 
+  // Collection management
+  const handleCreateCollection = useCallback((name: string) => {
+    if (name && name.trim()) {
+      const newCollection = createCollection(name.trim())
+      const updated = addCollection(workspace, newCollection)
+      saveWorkspace(updated)
+      setWorkspace(updated)
+    }
+  }, [workspace])
+
+  const handleRenameCollection = useCallback((collectionId: string, newName: string) => {
+    const updated = updateCollection(workspace, collectionId, { name: newName })
+    saveWorkspace(updated)
+    setWorkspace(updated)
+  }, [workspace])
+
+  const handleDeleteCollection = useCallback((collectionId: string) => {
+    const updated = deleteCollection(workspace, collectionId)
+    saveWorkspace(updated)
+    setWorkspace(updated)
+  }, [workspace])
+
+  // Folder management
+  const handleCreateFolder = useCallback((collectionId: string, name: string, parentFolderId?: string) => {
+    if (name && name.trim()) {
+      const newFolder = createFolder(name.trim())
+      const updated = addFolderToCollection(workspace, collectionId, newFolder, parentFolderId)
+      saveWorkspace(updated)
+      setWorkspace(updated)
+    }
+  }, [workspace])
+
+  const handleRenameFolder = useCallback((collectionId: string, folderId: string, newName: string) => {
+    const updated = renameFolderInCollection(workspace, collectionId, folderId, newName)
+    saveWorkspace(updated)
+    setWorkspace(updated)
+  }, [workspace])
+
+  const handleDeleteFolder = useCallback((collectionId: string, folderId: string) => {
+    const updated = deleteFolderFromCollection(workspace, collectionId, folderId)
+    saveWorkspace(updated)
+    setWorkspace(updated)
+  }, [workspace])
+
   return {
     // State
     workspace,
@@ -235,6 +297,16 @@ export function useWorkspaceManager(): UseWorkspaceManagerReturn {
     handleImportPathAdd,
     handleImportPathRemove,
     handleImportPathToggle,
+
+    // Collection operations
+    handleCreateCollection,
+    handleRenameCollection,
+    handleDeleteCollection,
+
+    // Folder operations
+    handleCreateFolder,
+    handleRenameFolder,
+    handleDeleteFolder,
 
     // Low-level setters
     setWorkspace,
