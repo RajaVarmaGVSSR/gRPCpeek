@@ -343,31 +343,26 @@ fn compile_proto_bundle(
     eprintln!("[proto_parser] Compiling {} proto files", proto_files.len());
     eprintln!("[proto_parser] Import paths: {:?}", import_paths.iter().map(|p| &p.path).collect::<Vec<_>>());
 
+    // Extract all import statements from proto files
+    let all_imports = extract_all_imports(proto_files);
+    eprintln!("[proto_parser] Found imports: {:?}", all_imports);
+
     let mut command = Command::new("protoc");
     command.arg("--descriptor_set_out").arg(&descriptor_path);
     command.arg("--include_imports");
 
-    // Add all import paths as proto_path for protoc
-    // This allows protoc to resolve imports correctly from the original locations
-    for import in import_paths {
-        let import_path = Path::new(&import.path);
-        if import_path.is_dir() {
-            command.arg("--proto_path").arg(&import.path);
-            eprintln!("[proto_parser] Added proto_path (dir): {}", import.path);
-        } else if let Some(parent) = import_path.parent() {
-            // If it's a file, add its parent directory
-            if parent.exists() {
-                command.arg("--proto_path").arg(parent);
-                eprintln!("[proto_parser] Added proto_path (parent): {}", parent.display());
-            }
-        }
+    // Collect all proto_paths we need to add
+    let proto_paths = discover_proto_paths(import_paths, &all_imports);
+    
+    for proto_path in &proto_paths {
+        command.arg("--proto_path").arg(proto_path);
+        eprintln!("[proto_parser] Added proto_path: {}", proto_path.display());
     }
 
-    // Add each proto file using its path relative to the import paths
-    // This ensures protoc can find them and resolve imports correctly
+    // Add each proto file using its path relative to one of the proto_paths
     for (original_path, _content) in proto_files {
-        // Try to find the relative path from one of the import paths
-        let proto_arg = find_relative_proto_path(original_path, import_paths)
+        // Try to find the relative path from one of the proto_paths
+        let proto_arg = find_relative_proto_path_from_roots(original_path, &proto_paths)
             .unwrap_or_else(|| original_path.to_string_lossy().to_string());
         
         // Normalize path separators for protoc
@@ -397,15 +392,78 @@ fn compile_proto_bundle(
         .map_err(|e| format!("Failed to decode descriptor set: {}", e))
 }
 
-/// Find the relative path of a proto file from one of the import paths
-fn find_relative_proto_path(proto_path: &Path, import_paths: &[ImportPath]) -> Option<String> {
+/// Discover all proto_paths needed to resolve imports
+fn discover_proto_paths(
+    import_paths: &[ImportPath],
+    all_imports: &[String],
+) -> Vec<PathBuf> {
+    let mut proto_paths: Vec<PathBuf> = Vec::new();
+    let mut seen: HashSet<PathBuf> = HashSet::new();
+
+    // First, add all configured import paths
     for import in import_paths {
-        let import_root = Path::new(&import.path);
-        if import_root.is_dir() {
-            if let Ok(relative) = proto_path.strip_prefix(import_root) {
-                if !relative.as_os_str().is_empty() {
-                    return Some(relative.to_string_lossy().to_string());
+        let import_path = Path::new(&import.path);
+        if import_path.is_dir() {
+            if seen.insert(import_path.to_path_buf()) {
+                proto_paths.push(import_path.to_path_buf());
+            }
+        } else if let Some(parent) = import_path.parent() {
+            if parent.exists() && seen.insert(parent.to_path_buf()) {
+                proto_paths.push(parent.to_path_buf());
+            }
+        }
+    }
+
+    // Check if any imports use directory name prefixes
+    // e.g., import "folder1/common/file.proto" when import_path is "folder1"
+    // In this case, we need to add the parent of folder1 as a proto_path
+    for import in import_paths {
+        let import_path = Path::new(&import.path);
+        if import_path.is_dir() {
+            if let Some(dir_name) = import_path.file_name().and_then(|n| n.to_str()) {
+                let prefix_with_slash = format!("{}/", dir_name);
+                let has_prefixed_imports = all_imports.iter().any(|imp| imp.starts_with(&prefix_with_slash));
+                
+                if has_prefixed_imports {
+                    if let Some(parent) = import_path.parent() {
+                        if parent.exists() && seen.insert(parent.to_path_buf()) {
+                            eprintln!("[proto_parser] Added parent for prefixed imports '{}/*': {}", 
+                                dir_name, parent.display());
+                            proto_paths.push(parent.to_path_buf());
+                        }
+                    }
                 }
+            }
+        }
+    }
+
+    proto_paths
+}
+
+/// Extract all import statements from proto files
+fn extract_all_imports(proto_files: &[(PathBuf, String)]) -> Vec<String> {
+    let import_re = Regex::new(r#"import\s+"([^"]+)";"#).expect("valid import regex");
+    let mut imports = Vec::new();
+    
+    for (_path, content) in proto_files {
+        for cap in import_re.captures_iter(content) {
+            if let Some(import_path) = cap.get(1) {
+                imports.push(import_path.as_str().to_string());
+            }
+        }
+    }
+    
+    imports.sort();
+    imports.dedup();
+    imports
+}
+
+/// Find the relative path of a proto file from one of the proto_path roots
+fn find_relative_proto_path_from_roots(proto_path: &Path, roots: &[PathBuf]) -> Option<String> {
+    for root in roots {
+        if let Ok(relative) = proto_path.strip_prefix(root) {
+            if !relative.as_os_str().is_empty() {
+                return Some(relative.to_string_lossy().to_string());
             }
         }
     }
