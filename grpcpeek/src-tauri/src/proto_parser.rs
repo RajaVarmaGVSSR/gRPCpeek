@@ -326,6 +326,12 @@ fn extract_package(content: &str) -> Option<String> {
         .map(|m| m.as_str().to_string())
 }
 
+/// Check if a proto file defines any services
+fn has_service_definition(content: &str) -> bool {
+    let service_re = Regex::new(r"service\s+\w+\s*\{").expect("valid service regex");
+    service_re.is_match(content)
+}
+
 fn compile_proto_bundle(
     proto_files: &[(PathBuf, String)],
     import_paths: &[ImportPath],
@@ -339,35 +345,48 @@ fn compile_proto_bundle(
         .map_err(|e| format!("Failed to create temporary directory: {}", e))?;
     let descriptor_path = temp_dir.path().join("bundle.pb");
 
-    // Log for debugging
-    eprintln!("[proto_parser] Compiling {} proto files", proto_files.len());
-    eprintln!("[proto_parser] Import paths: {:?}", import_paths.iter().map(|p| &p.path).collect::<Vec<_>>());
-
     // Extract all import statements from proto files
     let all_imports = extract_all_imports(proto_files);
     eprintln!("[proto_parser] Found imports: {:?}", all_imports);
 
+    // Collect all proto_paths we need to add
+    let proto_paths = discover_proto_paths(import_paths, &all_imports);
+
+    // IMPORTANT: Only compile files that define services, not ALL proto files
+    // Dependencies (like google/type/money.proto) will be pulled in by --include_imports
+    // This avoids "already defined" errors when the same file is both a discovered 
+    // proto file AND an import
+    let service_files: Vec<&(PathBuf, String)> = proto_files
+        .iter()
+        .filter(|(_, content)| has_service_definition(content))
+        .collect();
+
+    if service_files.is_empty() {
+        return Err("No proto files with service definitions found".to_string());
+    }
+
+    eprintln!("[proto_parser] Compiling {} service files (out of {} total proto files)", 
+        service_files.len(), proto_files.len());
+    eprintln!("[proto_parser] Import paths: {:?}", import_paths.iter().map(|p| &p.path).collect::<Vec<_>>());
+
     let mut command = Command::new("protoc");
     command.arg("--descriptor_set_out").arg(&descriptor_path);
     command.arg("--include_imports");
-
-    // Collect all proto_paths we need to add
-    let proto_paths = discover_proto_paths(import_paths, &all_imports);
     
     for proto_path in &proto_paths {
         command.arg("--proto_path").arg(proto_path);
         eprintln!("[proto_parser] Added proto_path: {}", proto_path.display());
     }
 
-    // Add each proto file using its path relative to one of the proto_paths
-    for (original_path, _content) in proto_files {
+    // Only add proto files that define services
+    for (original_path, _content) in &service_files {
         // Try to find the relative path from one of the proto_paths
         let proto_arg = find_relative_proto_path_from_roots(original_path, &proto_paths)
             .unwrap_or_else(|| original_path.to_string_lossy().to_string());
         
         // Normalize path separators for protoc
         let normalized = proto_arg.replace('\\', "/");
-        eprintln!("[proto_parser] Adding proto file: {} -> {}", original_path.display(), normalized);
+        eprintln!("[proto_parser] Adding service file: {} -> {}", original_path.display(), normalized);
         command.arg(&normalized);
     }
 
@@ -393,51 +412,104 @@ fn compile_proto_bundle(
 }
 
 /// Discover all proto_paths needed to resolve imports
+/// 
+/// This handles multiple import resolution scenarios:
+/// 1. Standard imports relative to configured import path
+/// 2. Prefixed imports (e.g., "parent/models/user.proto" when import path ends with "parent")
+/// 3. Mixed imports where some files use prefix and others don't (e.g., "google/type/money.proto")
+///
+/// For case 3, we need to add subdirectories that contain the non-prefixed imports.
 fn discover_proto_paths(
     import_paths: &[ImportPath],
     all_imports: &[String],
 ) -> Vec<PathBuf> {
     let mut proto_paths: Vec<PathBuf> = Vec::new();
-    let mut seen: HashSet<PathBuf> = HashSet::new();
+    let mut seen: HashSet<String> = HashSet::new();
 
-    // First, add all configured import paths
+    // Helper to normalize path for comparison (avoid Windows \\?\ issues)
+    let normalize_path = |p: &Path| -> String {
+        p.to_string_lossy()
+            .trim_start_matches(r"\\?\")
+            .replace('\\', "/")
+            .to_lowercase()
+    };
+
+    // First pass: add all configured import paths
     for import in import_paths {
         let import_path = Path::new(&import.path);
         if import_path.is_dir() {
-            if seen.insert(import_path.to_path_buf()) {
+            let normalized = normalize_path(import_path);
+            if seen.insert(normalized) {
                 proto_paths.push(import_path.to_path_buf());
             }
         } else if let Some(parent) = import_path.parent() {
-            if parent.exists() && seen.insert(parent.to_path_buf()) {
-                proto_paths.push(parent.to_path_buf());
+            if parent.exists() {
+                let normalized = normalize_path(parent);
+                if seen.insert(normalized) {
+                    proto_paths.push(parent.to_path_buf());
+                }
             }
         }
     }
 
-    // Check if any imports use directory name prefixes
-    // e.g., import "folder1/common/file.proto" when import_path is "folder1"
-    // In this case, we need to add the parent of folder1 as a proto_path
+    // Second pass: for each import, try to find where it actually exists
+    // This handles cases where imports might resolve from subdirectories
     for import in import_paths {
         let import_path = Path::new(&import.path);
-        if import_path.is_dir() {
-            if let Some(dir_name) = import_path.file_name().and_then(|n| n.to_str()) {
-                let prefix_with_slash = format!("{}/", dir_name);
-                let has_prefixed_imports = all_imports.iter().any(|imp| imp.starts_with(&prefix_with_slash));
-                
-                if has_prefixed_imports {
-                    if let Some(parent) = import_path.parent() {
-                        if parent.exists() && seen.insert(parent.to_path_buf()) {
-                            eprintln!("[proto_parser] Added parent for prefixed imports '{}/*': {}", 
-                                dir_name, parent.display());
-                            proto_paths.push(parent.to_path_buf());
-                        }
-                    }
+        if !import_path.is_dir() {
+            continue;
+        }
+
+        for import_stmt in all_imports {
+            // Check if this import resolves directly from the import path
+            let direct_path = import_path.join(import_stmt);
+            if direct_path.exists() {
+                continue; // Already resolvable, no need to add more paths
+            }
+
+            // Try to find the import in subdirectories
+            // e.g., if import is "google/type/money.proto" and it exists at "proto/parent/google/type/money.proto"
+            // we need to add "proto/parent" as a proto_path
+            if let Some(found_path) = find_import_in_subdirs(import_path, import_stmt) {
+                let normalized = normalize_path(&found_path);
+                if seen.insert(normalized) {
+                    eprintln!("[proto_parser] Added subdirectory for import '{}': {}", 
+                        import_stmt, found_path.display());
+                    proto_paths.push(found_path);
                 }
             }
         }
     }
 
     proto_paths
+}
+
+/// Search for an import file in subdirectories of the given path
+/// Returns the subdirectory path that should be added as proto_path
+fn find_import_in_subdirs(base_path: &Path, import_stmt: &str) -> Option<PathBuf> {
+    // Get the first component of the import (e.g., "google" from "google/type/money.proto")
+    let import_first = import_stmt.split('/').next()?;
+    
+    // Look for directories that contain this import
+    for entry in WalkDir::new(base_path)
+        .max_depth(3) // Don't go too deep
+        .into_iter()
+        .filter_map(|e| e.ok())
+    {
+        if entry.file_type().is_dir() {
+            // Check if this directory name matches the first component of the import
+            if entry.file_name().to_str() == Some(import_first) {
+                // Verify the full import path exists from the parent
+                let potential_proto_path = entry.path().parent()?;
+                let full_import_path = potential_proto_path.join(import_stmt);
+                if full_import_path.exists() {
+                    return Some(potential_proto_path.to_path_buf());
+                }
+            }
+        }
+    }
+    
+    None
 }
 
 /// Extract all import statements from proto files
@@ -460,7 +532,28 @@ fn extract_all_imports(proto_files: &[(PathBuf, String)]) -> Vec<String> {
 
 /// Find the relative path of a proto file from one of the proto_path roots
 fn find_relative_proto_path_from_roots(proto_path: &Path, roots: &[PathBuf]) -> Option<String> {
+    // Normalize the proto path (handle Windows \\?\ prefix)
+    let proto_str = proto_path.to_string_lossy();
+    let proto_normalized = proto_str.trim_start_matches(r"\\?\");
+    
     for root in roots {
+        // Normalize the root path as well
+        let root_str = root.to_string_lossy();
+        let root_normalized = root_str.trim_start_matches(r"\\?\");
+        
+        // Try to find the relative path by string comparison
+        if proto_normalized.starts_with(root_normalized) {
+            let relative = proto_normalized
+                .strip_prefix(root_normalized)
+                .unwrap_or(proto_normalized)
+                .trim_start_matches(['/', '\\']);
+            
+            if !relative.is_empty() {
+                return Some(relative.to_string());
+            }
+        }
+        
+        // Also try the standard strip_prefix
         if let Ok(relative) = proto_path.strip_prefix(root) {
             if !relative.as_os_str().is_empty() {
                 return Some(relative.to_string_lossy().to_string());
