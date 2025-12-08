@@ -2,7 +2,6 @@ use regex::Regex;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use std::collections::HashSet;
-use std::ffi::OsString;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -335,52 +334,49 @@ fn compile_proto_bundle(
         return Err("No proto files available for compilation".to_string());
     }
 
+    // Create temp directory only for the output descriptor file
     let temp_dir = TempDir::new()
         .map_err(|e| format!("Failed to create temporary directory: {}", e))?;
-    let mut relative_paths = Vec::new();
-
-    for (original_path, content) in proto_files {
-        let relative_path = derive_relative_path(original_path, import_paths, &relative_paths);
-        let destination = temp_dir.path().join(&relative_path);
-
-        if let Some(parent) = destination.parent() {
-            fs::create_dir_all(parent).map_err(|e| {
-                format!(
-                    "Failed to create temporary proto directory '{}': {}",
-                    parent.to_string_lossy(),
-                    e
-                )
-            })?;
-        }
-
-        fs::write(&destination, content).map_err(|e| {
-            format!(
-                "Failed to write temporary proto file '{}': {}",
-                destination.to_string_lossy(),
-                e
-            )
-        })?;
-
-        relative_paths.push(relative_path);
-    }
-
     let descriptor_path = temp_dir.path().join("bundle.pb");
+
+    // Log for debugging
+    eprintln!("[proto_parser] Compiling {} proto files", proto_files.len());
+    eprintln!("[proto_parser] Import paths: {:?}", import_paths.iter().map(|p| &p.path).collect::<Vec<_>>());
 
     let mut command = Command::new("protoc");
     command.arg("--descriptor_set_out").arg(&descriptor_path);
     command.arg("--include_imports");
-    command.arg("--proto_path").arg(temp_dir.path());
 
+    // Add all import paths as proto_path for protoc
+    // This allows protoc to resolve imports correctly from the original locations
     for import in import_paths {
-        command.arg("--proto_path").arg(&import.path);
+        let import_path = Path::new(&import.path);
+        if import_path.is_dir() {
+            command.arg("--proto_path").arg(&import.path);
+            eprintln!("[proto_parser] Added proto_path (dir): {}", import.path);
+        } else if let Some(parent) = import_path.parent() {
+            // If it's a file, add its parent directory
+            if parent.exists() {
+                command.arg("--proto_path").arg(parent);
+                eprintln!("[proto_parser] Added proto_path (parent): {}", parent.display());
+            }
+        }
     }
 
-    for rel_path in &relative_paths {
-        let normalized = rel_path
-            .to_string_lossy()
-            .replace('\\', "/");
-        command.arg(normalized);
+    // Add each proto file using its path relative to the import paths
+    // This ensures protoc can find them and resolve imports correctly
+    for (original_path, _content) in proto_files {
+        // Try to find the relative path from one of the import paths
+        let proto_arg = find_relative_proto_path(original_path, import_paths)
+            .unwrap_or_else(|| original_path.to_string_lossy().to_string());
+        
+        // Normalize path separators for protoc
+        let normalized = proto_arg.replace('\\', "/");
+        eprintln!("[proto_parser] Adding proto file: {} -> {}", original_path.display(), normalized);
+        command.arg(&normalized);
     }
+
+    eprintln!("[proto_parser] Running protoc with args: {:?}", command);
 
     let output = command.output().map_err(|e| {
         format!(
@@ -401,58 +397,46 @@ fn compile_proto_bundle(
         .map_err(|e| format!("Failed to decode descriptor set: {}", e))
 }
 
-fn derive_relative_path(
-    original_path: &Path,
-    import_paths: &[ImportPath],
-    existing: &[PathBuf],
-) -> PathBuf {
+/// Find the relative path of a proto file from one of the import paths
+fn find_relative_proto_path(proto_path: &Path, import_paths: &[ImportPath]) -> Option<String> {
     for import in import_paths {
         let import_root = Path::new(&import.path);
-        if let Ok(relative) = original_path.strip_prefix(import_root) {
-            if !relative.as_os_str().is_empty() {
-                let candidate = relative.to_path_buf();
-                if !existing.contains(&candidate) {
-                    return candidate;
+        if import_root.is_dir() {
+            if let Ok(relative) = proto_path.strip_prefix(import_root) {
+                if !relative.as_os_str().is_empty() {
+                    return Some(relative.to_string_lossy().to_string());
                 }
             }
         }
     }
-
-    let file_name = original_path
-        .file_name()
-        .map(|name| name.to_os_string())
-        .unwrap_or_else(|| OsString::from("proto.proto"));
-
-    let mut candidate = PathBuf::from(&file_name);
-    if !existing.contains(&candidate) {
-        return candidate;
-    }
-
-    let stem = original_path
-        .file_stem()
-        .and_then(|s| s.to_str())
-        .unwrap_or("proto");
-    let extension = original_path
-        .extension()
-        .and_then(|ext| ext.to_str())
-        .unwrap_or("proto");
-
-    let mut counter = 1;
-    loop {
-        let generated = format!("{}_{}.{}", stem, counter, extension);
-        candidate = PathBuf::from(&generated);
-        if !existing.contains(&candidate) {
-            return candidate;
-        }
-        counter += 1;
-    }
+    None
 }
+
 
 fn enrich_with_samples(
     services: &mut [Service],
     descriptor_pool: &DescriptorPool,
     warnings: &mut Vec<String>,
 ) {
+    // Debug: log all available messages in the pool
+    let all_message_names: Vec<String> = descriptor_pool
+        .all_messages()
+        .map(|m| m.full_name().to_string())
+        .collect();
+    
+    // Debug: log all available enums in the pool
+    let all_enum_names: Vec<String> = descriptor_pool
+        .all_enums()
+        .map(|e| e.full_name().to_string())
+        .collect();
+    
+    eprintln!("[proto_parser] Available messages: {:?}", all_message_names);
+    eprintln!("[proto_parser] Available enums: {:?}", all_enum_names);
+    
+    if all_message_names.is_empty() {
+        warnings.push("No message types found in descriptor pool".to_string());
+    }
+
     for service in services.iter_mut() {
         for method in service.methods.iter_mut() {
             let descriptor = find_message_descriptor(
@@ -463,14 +447,10 @@ fn enrich_with_samples(
 
             let Some(message_desc) = descriptor else {
                 warnings.push(format!(
-                        "Descriptor not found for message '{}' referenced by {}{}",
-                        method.input_type,
-                        service
-                            .package_name
-                            .as_deref()
-                            .map(|pkg| format!("{}.", pkg))
-                            .unwrap_or_default(),
-                        method.name
+                    "Descriptor not found for '{}' (service package: {:?}). Available types: {:?}",
+                    method.input_type,
+                    service.package_name,
+                    all_message_names.iter().take(10).collect::<Vec<_>>()
                 ));
                 continue;
             };
@@ -496,12 +476,14 @@ fn find_message_descriptor<'a>(
 ) -> Option<MessageDescriptor> {
     let trimmed = type_name.trim_start_matches('.');
 
+    // First try exact match with full name
     for message in pool.all_messages() {
         if message.full_name() == trimmed {
             return Some(message);
         }
     }
 
+    // Try with service package prefix
     if let Some(pkg) = package {
         let qualified = format!("{}.{}", pkg, trimmed);
         for message in pool.all_messages() {
@@ -511,11 +493,32 @@ fn find_message_descriptor<'a>(
         }
     }
 
+    // Try matching just the type name part for cross-package references
+    // e.g., "models.User" should match message with full_name "models.User"
+    // This handles cases where input_type already includes package prefix
+    if trimmed.contains('.') {
+        // The type_name already has a package prefix (like "models.User")
+        // It might be relative or absolute
+        for message in pool.all_messages() {
+            // Try exact match
+            if message.full_name() == trimmed {
+                return Some(message);
+            }
+            // Try suffix match (in case it's a relative reference)
+            if message.full_name().ends_with(&format!(".{}", trimmed)) {
+                return Some(message);
+            }
+        }
+    }
+
+    // Fallback: simple name match (only if unambiguous)
+    let simple_name = trimmed.split('.').last().unwrap_or(trimmed);
     let mut simple_match = None;
 
     for message in pool.all_messages() {
-        if message.name() == trimmed {
+        if message.name() == simple_name {
             if simple_match.is_some() {
+                // Ambiguous - multiple messages with same simple name
                 return None;
             }
             simple_match = Some(message);
