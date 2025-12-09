@@ -8,6 +8,9 @@ use std::process::Command;
 use tempfile::TempDir;
 use walkdir::WalkDir;
 
+#[cfg(windows)]
+use std::os::windows::process::CommandExt;
+
 use prost_reflect::{DescriptorPool, FieldDescriptor, MessageDescriptor};
 
 const MAX_SAMPLE_DEPTH: usize = 4;
@@ -370,6 +373,11 @@ fn compile_proto_bundle(
     eprintln!("[proto_parser] Import paths: {:?}", import_paths.iter().map(|p| &p.path).collect::<Vec<_>>());
 
     let mut command = Command::new("protoc");
+    
+    // On Windows, prevent the console window from appearing
+    #[cfg(windows)]
+    command.creation_flags(0x08000000); // CREATE_NO_WINDOW
+    
     command.arg("--descriptor_set_out").arg(&descriptor_path);
     command.arg("--include_imports");
     
