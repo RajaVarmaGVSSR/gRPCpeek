@@ -45,7 +45,7 @@ export function StreamingResponsePanel({ messages }: StreamingResponsePanelProps
   }
 
   return (
-    <div className="space-y-3">
+    <div className="flex flex-col gap-3 h-full">
       <div className="flex items-center justify-between border-b border-border/40 pb-2">
         <div className="flex items-center gap-2">
           <span className="text-sm font-medium text-muted-foreground">
@@ -71,7 +71,7 @@ export function StreamingResponsePanel({ messages }: StreamingResponsePanelProps
         </div>
       </div>
 
-      <div className="space-y-1.5 max-h-[500px] overflow-y-auto pr-1">
+      <div className="space-y-1.5 flex-1 overflow-y-auto pr-1">
         {messages.map((message, index) => {
           const isExpanded = expandedIndices.has(index)
           return (
