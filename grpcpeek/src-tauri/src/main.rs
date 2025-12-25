@@ -24,6 +24,9 @@ use std::sync::Mutex;
 use std::collections::HashMap;
 use tokio::sync::mpsc;
 
+#[cfg(windows)]
+use std::os::windows::process::CommandExt;
+
 // Active client stream connection with channel for sending messages
 struct ActiveClientStream {
     sender: mpsc::UnboundedSender<Vec<u8>>,
@@ -216,7 +219,13 @@ fn compile_proto_to_descriptors(proto_content: &str) -> Result<DescriptorPool, S
         .to_string_lossy();
 
     // Run protoc to generate FileDescriptorSet
-    let output = Command::new("protoc")
+    let mut command = Command::new("protoc");
+    
+    // On Windows, prevent the console window from appearing
+    #[cfg(windows)]
+    command.creation_flags(0x08000000); // CREATE_NO_WINDOW
+    
+    let output = command
         .args(&[
             "--descriptor_set_out",
             &descriptor_path,

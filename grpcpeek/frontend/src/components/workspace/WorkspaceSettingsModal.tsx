@@ -1,4 +1,4 @@
-import { useState, useEffect, type KeyboardEvent } from 'react'
+import { useState, useEffect, useRef, type KeyboardEvent } from 'react'
 import { createPortal } from 'react-dom'
 import { Button, Input, Label, Card } from '../ui'
 import { ImportPathManager } from './ImportPathManager'
@@ -53,6 +53,10 @@ export function WorkspaceSettingsModal({
   const [environmentModalEnv, setEnvironmentModalEnv] = useState<Environment | null>(null)
   const [isCreatingNewEnvironment, setIsCreatingNewEnvironment] = useState(false)
   const [deleteConfirm, setDeleteConfirm] = useState<{ id: string; name: string } | null>(null)
+  
+  // Track initial import paths to detect changes for auto-reparse
+  const initialImportPathsRef = useRef<string | null>(null)
+  const importPathsChanged = useRef(false)
 
   // Update internal state when workspace prop changes (e.g., after creating/editing environments)
   useEffect(() => {
@@ -61,8 +65,27 @@ export function WorkspaceSettingsModal({
       setActiveTab(initialTab)
       setEnvironmentModalEnv(null)
       setIsCreatingNewEnvironment(false)
+      // Capture initial import paths when modal opens
+      if (initialImportPathsRef.current === null) {
+        initialImportPathsRef.current = JSON.stringify(workspace.importPaths)
+        importPathsChanged.current = false
+      }
+    } else {
+      // Reset when modal closes
+      initialImportPathsRef.current = null
+      importPathsChanged.current = false
     }
   }, [isOpen, initialTab])
+
+  // Detect import path changes while modal is open
+  useEffect(() => {
+    if (isOpen && initialImportPathsRef.current !== null) {
+      const currentPaths = JSON.stringify(workspace.importPaths)
+      if (currentPaths !== initialImportPathsRef.current) {
+        importPathsChanged.current = true
+      }
+    }
+  }, [isOpen, workspace.importPaths])
 
   // Sync workspace name when workspace prop changes while modal is open
   useEffect(() => {
@@ -73,14 +96,39 @@ export function WorkspaceSettingsModal({
 
   if (!isOpen) return null
 
-  const handleSave = () => {
+  // Close handler that also triggers reparse if paths changed
+  const handleClose = async () => {
+    // Auto-reparse if import paths changed during this session
+    if (importPathsChanged.current && onReparse) {
+      console.log('Import paths changed during session, triggering auto-reparse on close...')
+      try {
+        await onReparse()
+      } catch (error) {
+        console.error('Auto-reparse on close failed:', error)
+      }
+    }
+    onClose()
+  }
+
+  const handleSave = async () => {
     onSave({ name: workspaceName })
+    
+    // Auto-reparse if import paths changed
+    if (importPathsChanged.current && onReparse) {
+      console.log('Import paths changed, triggering auto-reparse...')
+      try {
+        await onReparse()
+      } catch (error) {
+        console.error('Auto-reparse failed:', error)
+      }
+    }
+    
     onClose()
   }
 
   const handleKeyDown = (e: KeyboardEvent) => {
     if (e.key === 'Escape') {
-      onClose()
+      handleClose()
     }
   }
 
@@ -96,7 +144,7 @@ export function WorkspaceSettingsModal({
   return (
     <div
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4"
-      onClick={onClose}
+      onClick={handleClose}
       onKeyDown={handleKeyDown}
     >
       <div
@@ -111,7 +159,7 @@ export function WorkspaceSettingsModal({
               Configure workspace-level options
             </p>
           </div>
-          <Button variant="ghost" size="sm" onClick={onClose} className="text-muted-foreground">
+          <Button variant="ghost" size="sm" onClick={handleClose} className="text-muted-foreground">
             ✕
           </Button>
         </div>
@@ -422,7 +470,7 @@ export function WorkspaceSettingsModal({
 
         {/* Footer */}
         <div className="flex justify-end gap-2 border-t border-border/50 p-4">
-          <Button variant="ghost" onClick={onClose}>
+          <Button variant="ghost" onClick={handleClose}>
             Cancel
           </Button>
           <Button onClick={handleSave}>

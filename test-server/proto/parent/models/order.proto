@@ -2,8 +2,8 @@ syntax = "proto3";
 
 package models;
 
-import "common/types.proto";
-import "models/product.proto";
+import "parent/common/types.proto";
+import "parent/models/product.proto";
 
 option java_multiple_files = true;
 option java_package = "com.example.models";

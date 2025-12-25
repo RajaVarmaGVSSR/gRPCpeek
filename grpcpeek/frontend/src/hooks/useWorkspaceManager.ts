@@ -211,22 +211,28 @@ export function useWorkspaceManager(): UseWorkspaceManagerReturn {
   }, [workspace])
 
   const handleImportPathAdd = useCallback((path: string, type: 'file' | 'directory') => {
-    const updated = addImportPath(workspace, path, type)
-    saveWorkspace(updated)
-    setWorkspace(updated)
-  }, [workspace])
+    setWorkspace(currentWorkspace => {
+      const updated = addImportPath(currentWorkspace, path, type)
+      saveWorkspace(updated)
+      return updated
+    })
+  }, [])
 
   const handleImportPathRemove = useCallback((id: string) => {
-    const updated = removeImportPath(workspace, id)
-    saveWorkspace(updated)
-    setWorkspace(updated)
-  }, [workspace])
+    setWorkspace(currentWorkspace => {
+      const updated = removeImportPath(currentWorkspace, id)
+      saveWorkspace(updated)
+      return updated
+    })
+  }, [])
 
   const handleImportPathToggle = useCallback((id: string) => {
-    const updated = toggleImportPath(workspace, id)
-    saveWorkspace(updated)
-    setWorkspace(updated)
-  }, [workspace])
+    setWorkspace(currentWorkspace => {
+      const updated = toggleImportPath(currentWorkspace, id)
+      saveWorkspace(updated)
+      return updated
+    })
+  }, [])
 
   // Collection management
   const handleCreateCollection = useCallback((name: string) => {

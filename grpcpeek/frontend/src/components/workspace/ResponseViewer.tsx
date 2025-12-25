@@ -207,7 +207,7 @@ export function ResponseViewer({ tab, onClearStreaming }: ResponseViewerProps) {
                 
                 // Show formatted accordion view
                 return (
-                  <div className="flex-1 overflow-y-auto">
+                  <div className="flex flex-col min-h-0 flex-1 overflow-hidden">
                     <StreamingResponsePanel
                       messages={tab.streamingMessages.map(m => m.data)}
                       onClear={onClearStreaming || (() => {})}

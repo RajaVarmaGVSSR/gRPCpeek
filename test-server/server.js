@@ -214,12 +214,12 @@ function withBidiStreamLogging(serviceName, methodName, handler) {
 
 // Load all proto files
 const PROTO_FILES = [
-  'services/hello.proto',
-  'services/user.proto',
-  'services/chat.proto',
-  'services/shop.proto',
-  'services/auth.proto',
-  'services/echo.proto',
+  'parent/services/hello.proto',
+  'parent/services/user.proto',
+  'parent/services/chat.proto',
+  'parent/services/shop.proto',
+  'parent/services/auth.proto',
+  'parent/services/echo.proto',
 ];
 
 console.log('Loading proto files from:', PROTO_PATH);
@@ -233,7 +233,7 @@ const packageDefinition = protoLoader.loadSync(
     enums: String,
     defaults: true,
     oneofs: true,
-    includeDirs: [PROTO_PATH], // Allow imports from proto directory
+    includeDirs: [PROTO_PATH, path.join(PROTO_PATH, 'parent')], // Allow imports from proto and parent directory
   }
 );
 

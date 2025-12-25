@@ -2,9 +2,9 @@ syntax = "proto3";
 
 package services;
 
-import "models/product.proto";
-import "models/order.proto";
-import "common/types.proto";
+import "parent/models/product.proto";
+import "parent/models/order.proto";
+import "parent/common/types.proto";
 
 option java_multiple_files = true;
 option java_package = "com.example.services";

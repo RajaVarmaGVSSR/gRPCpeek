@@ -202,6 +202,9 @@ function App() {
       return false
     }
 
+    // Debug: log the import paths we're using
+    console.log('[handleProtoReparse] workspace.importPaths:', workspaceManager.workspace.importPaths)
+
     const enabledPaths = workspaceManager.workspace.importPaths
       .filter((ip) => ip.enabled)
       .map((ip) => ({
@@ -210,6 +213,8 @@ function App() {
         type: ip.type,
         enabled: ip.enabled,
       }))
+
+    console.log('[handleProtoReparse] enabledPaths:', enabledPaths)
 
     if (enabledPaths.length === 0) {
       if (!suppressErrors) {
@@ -286,30 +291,50 @@ function App() {
     })
   }
 
-  // Keep the workspace settings modal in sync with environment changes
+  // Keep the workspace settings modal in sync with workspace changes (environments, importPaths, etc.)
   useEffect(() => {
+    console.log('[Sync Effect] Running, modal open:', workspaceModals.isWorkspaceSettingsOpen)
     if (workspaceModals.isWorkspaceSettingsOpen) {
       const currentProps = workspaceModals.workspaceSettingsProps
       if (currentProps && currentProps.workspace) {
-        // Only update if the environments have actually changed (compare by reference)
-        const currentEnvs = currentProps.workspace.environments
-        const newEnvs = workspaceManager.workspace.environments
-        if (currentEnvs !== newEnvs) {
+        // Update if any relevant workspace data has changed
+        const currentWs = currentProps.workspace
+        const newWs = workspaceManager.workspace
+        const changed = currentWs.environments !== newWs.environments ||
+          currentWs.importPaths !== newWs.importPaths ||
+          currentWs.globals !== newWs.globals ||
+          currentWs.name !== newWs.name
+        console.log('[Sync Effect] Workspace changed:', changed, 'paths old:', currentWs.importPaths?.length, 'new:', newWs.importPaths?.length)
+        if (changed) {
+          console.log('[Sync Effect] Updating modal props with new workspace and handleProtoReparse')
           workspaceModals.openWorkspaceSettings({
             ...currentProps,
             workspace: workspaceManager.workspace,
+            // Also update onReparse to use the latest handleProtoReparse with current workspace state
+            onReparse: handleProtoReparse,
           })
         }
       }
     }
-  }, [workspaceManager.workspace.environments, workspaceModals])
+  }, [
+    workspaceManager.workspace.environments,
+    workspaceManager.workspace.importPaths,
+    workspaceManager.workspace.globals,
+    workspaceManager.workspace.name,
+    workspaceModals,
+    handleProtoReparse,
+  ])
 
   useEffect(() => {
     if (!hasEnabledImportPaths) {
       setParsedWorkspaceId(null)
+      // Clear services when no import paths are configured
+      setServices([])
       return
     }
 
+    // Only auto-parse on initial workspace load, not when import paths change
+    // Users should manually reparse after changing import paths via the modal
     if (parsedWorkspaceId === workspaceManager.workspace.id || isParsingProtos) {
       return
     }
@@ -319,6 +344,7 @@ function App() {
   }, [
     handleProtoReparse,
     hasEnabledImportPaths,
+    setServices,
     isParsingProtos,
     parsedWorkspaceId,
     workspaceManager.workspace.id,

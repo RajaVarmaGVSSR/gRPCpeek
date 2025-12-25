@@ -14,6 +14,7 @@ interface ImportPathManagerProps {
 /**
  * Component for managing proto import paths in a workspace.
  * Allows users to add file/directory paths, enable/disable them, and remove them.
+ * Renders directly from props - parent must update workspace state for changes to appear.
  */
 export function ImportPathManager({
   importPaths,
@@ -46,6 +47,7 @@ export function ImportPathManager({
       console.log('Selected file:', selected)
 
       if (selected) {
+        // Notify parent to add the path - parent state update will trigger re-render
         onAdd(selected as string, 'file')
       }
     } catch (error) {
@@ -70,6 +72,7 @@ export function ImportPathManager({
       console.log('Selected directory:', selected)
 
       if (selected) {
+        // Notify parent to add the path - parent state update will trigger re-render
         onAdd(selected as string, 'directory')
       }
     } catch (error) {

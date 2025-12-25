@@ -2,7 +2,8 @@ syntax = "proto3";
 
 package models;
 
-import "common/types.proto";
+import "parent/common/types.proto";
+import "google/type/money.proto";
 
 option java_multiple_files = true;
 option java_package = "com.example.models";
@@ -18,6 +19,7 @@ message User {
   string updated_at = 8;
   repeated string roles = 9;
   map<string, string> preferences = 10;
+  google.type.Money mney = 11;
 }
 
 enum UserStatus {
