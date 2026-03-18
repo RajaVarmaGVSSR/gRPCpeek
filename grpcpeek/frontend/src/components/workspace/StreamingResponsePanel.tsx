@@ -1,4 +1,5 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useMemo } from 'react'
+import { Input } from '../ui/Input'
 
 interface StreamingResponsePanelProps {
   messages: any[]
@@ -19,6 +20,25 @@ export function StreamingResponsePanel({ messages }: StreamingResponsePanelProps
       return next
     })
   }, [messages.length])
+
+  const [searchQuery, setSearchQuery] = useState('')
+
+  const filteredMessages = useMemo(() => {
+    const query = searchQuery.toLowerCase().trim()
+    if (!query) {
+      return messages.map((msg, index) => ({ msg, index }))
+    }
+    
+    return messages
+      .map((msg, index) => ({ msg, index }))
+      .filter(({ msg }) => {
+        try {
+          return JSON.stringify(msg).toLowerCase().includes(query)
+        } catch (e) {
+          return false
+        }
+      })
+  }, [messages, searchQuery])
 
   if (messages.length === 0) {
     return null
@@ -47,14 +67,24 @@ export function StreamingResponsePanel({ messages }: StreamingResponsePanelProps
   return (
     <div className="flex flex-col gap-3 h-full">
       <div className="flex items-center justify-between border-b border-border/40 pb-2">
-        <div className="flex items-center gap-2">
-          <span className="text-sm font-medium text-muted-foreground">
+        <div className="flex-1 flex max-w-xs items-center gap-2">
+          <span className="text-sm font-medium text-muted-foreground whitespace-nowrap">
             Stream Messages
           </span>
           <span className="rounded-full bg-green-100 px-2 py-0.5 text-xs font-medium text-green-700 dark:bg-green-900/30 dark:text-green-300">
             {messages.length}
           </span>
         </div>
+        
+        <div className="flex-1 flex justify-center px-4">
+          <Input 
+            placeholder="Search in stream..." 
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
+            className="h-7 text-xs w-full max-w-[200px]"
+          />
+        </div>
+
         <div className="flex items-center gap-1.5">
           <button
             onClick={expandAll}
@@ -72,7 +102,12 @@ export function StreamingResponsePanel({ messages }: StreamingResponsePanelProps
       </div>
 
       <div className="space-y-1.5 flex-1 overflow-y-auto pr-1">
-        {messages.map((message, index) => {
+        {filteredMessages.length === 0 && searchQuery && (
+          <div className="text-center py-4 text-xs text-muted-foreground">
+            No messages found matching "{searchQuery}"
+          </div>
+        )}
+        {filteredMessages.map(({ msg: message, index }) => {
           const isExpanded = expandedIndices.has(index)
           return (
             <div
