@@ -1,5 +1,5 @@
 import { useState, useCallback } from 'react'
-import type { Workspace, Variable, Environment, AuthConfig } from '../types/workspace'
+import type { Workspace, Variable, Environment, AuthConfig, TlsConfig } from '../types/workspace'
 import {
   getActiveWorkspace,
   getAllWorkspaces,
@@ -49,6 +49,7 @@ export interface UseWorkspaceManagerReturn {
     variables?: Variable[]
     metadata?: Record<string, string>
     auth?: AuthConfig
+    tls?: TlsConfig
   }) => string
   updateEnvironmentEntry: (environmentId: string, updates: Partial<Environment>) => void
   deleteEnvironmentEntry: (environmentId: string) => void
@@ -152,12 +153,14 @@ export function useWorkspaceManager(): UseWorkspaceManagerReturn {
     variables?: Variable[]
     metadata?: Record<string, string>
     auth?: AuthConfig
+    tls?: TlsConfig
   }) => {
     console.log('useWorkspaceManager - createEnvironmentEntry called with:', config)
     const environment = createEnvironmentEntity(config.name, config.host, config.port)
     environment.variables = config.variables ? config.variables.map((variable) => ({ ...variable })) : []
     environment.metadata = { ...(config.metadata || {}) }
     environment.auth = config.auth ? { ...config.auth } : { type: 'none' }
+    environment.tls = config.tls ? { ...config.tls } : { enabled: false }
     console.log('useWorkspaceManager - Created environment entity:', environment)
 
     const updated = addEnvironment(workspace, environment)

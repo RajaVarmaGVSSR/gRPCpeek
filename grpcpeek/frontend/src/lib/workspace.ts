@@ -203,6 +203,7 @@ export function updateEnvironment(
             variables: updates.variables !== undefined ? updates.variables.map(v => ({ ...v })) : env.variables,
             metadata: updates.metadata !== undefined ? { ...updates.metadata } : env.metadata,
             auth: updates.auth !== undefined ? { ...updates.auth } : env.auth,
+            tls: updates.tls !== undefined ? { ...updates.tls } : env.tls,
             updatedAt: new Date().toISOString(),
           }
         : env

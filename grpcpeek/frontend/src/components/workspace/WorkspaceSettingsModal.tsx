@@ -3,7 +3,7 @@ import { createPortal } from 'react-dom'
 import { Button, Input, Label, Card } from '../ui'
 import { ImportPathManager } from './ImportPathManager'
 import { EnvironmentEditorModal } from './EnvironmentEditorModal'
-import type { Workspace, Environment, Variable, AuthConfig } from '../../types/workspace'
+import type { Workspace, Environment, Variable, AuthConfig, TlsConfig } from '../../types/workspace'
 
 interface WorkspaceSettingsModalProps {
   isOpen: boolean
@@ -21,6 +21,7 @@ interface WorkspaceSettingsModalProps {
     variables?: Variable[]
     metadata?: Record<string, string>
     auth?: AuthConfig
+    tls?: TlsConfig
   }) => string
   onEnvironmentUpdate: (environmentId: string, updates: Partial<Environment>) => void
   onEnvironmentDelete: (environmentId: string) => void
@@ -509,6 +510,7 @@ export function WorkspaceSettingsModal({
               variables: config.variables || [],
               metadata: config.metadata || {},
               auth: config.auth || { type: 'none' },
+              tls: config.tls || { enabled: false },
             })
             // Note: createEnvironmentEntry already sets the new environment as active
             setIsCreatingNewEnvironment(false)
