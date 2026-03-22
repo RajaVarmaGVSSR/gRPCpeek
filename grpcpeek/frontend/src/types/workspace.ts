@@ -79,6 +79,7 @@ export interface Workspace {
   environments: Environment[]
   collections: Collection[]
   requestHistory: HistoryEntry[]
+  historyLimit?: number
   
   // Session state (persisted across app restarts)
   services?: Service[]  // Parsed services from proto files
@@ -201,6 +202,8 @@ export interface HistoryEntry {
   responseSize: number  // bytes
   messageCount?: number  // For streaming responses
   environmentId: string | null  // Which environment was active
+  errorResponse?: string
+  responseMetadata?: Record<string, any>
 }
 
 // ============================================================================

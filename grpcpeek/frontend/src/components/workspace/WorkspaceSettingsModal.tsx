@@ -50,6 +50,7 @@ export function WorkspaceSettingsModal({
   initialTab = 'general',
 }: WorkspaceSettingsModalProps) {
   const [workspaceName, setWorkspaceName] = useState(workspace.name)
+  const [historyLimit, setHistoryLimit] = useState<number>(workspace.historyLimit || 30)
   const [activeTab, setActiveTab] = useState<'general' | 'imports' | 'globals' | 'environments'>(initialTab)
   const [environmentModalEnv, setEnvironmentModalEnv] = useState<Environment | null>(null)
   const [isCreatingNewEnvironment, setIsCreatingNewEnvironment] = useState(false)
@@ -63,6 +64,7 @@ export function WorkspaceSettingsModal({
   useEffect(() => {
     if (isOpen) {
       setWorkspaceName(workspace.name)
+      setHistoryLimit(workspace.historyLimit || 30)
       setActiveTab(initialTab)
       setEnvironmentModalEnv(null)
       setIsCreatingNewEnvironment(false)
@@ -112,7 +114,7 @@ export function WorkspaceSettingsModal({
   }
 
   const handleSave = async () => {
-    onSave({ name: workspaceName })
+    onSave({ name: workspaceName, historyLimit })
     
     // Auto-reparse if import paths changed
     if (importPathsChanged.current && onReparse) {
@@ -226,6 +228,25 @@ export function WorkspaceSettingsModal({
                 />
                 <p className="mt-2 text-xs text-muted-foreground">
                   A descriptive name for this workspace
+                </p>
+              </div>
+
+              <div>
+                <Label htmlFor="history-limit">History Storage Limit</Label>
+                <select
+                  id="history-limit"
+                  value={historyLimit}
+                  onChange={(e) => setHistoryLimit(Number(e.target.value))}
+                  className="mt-2 flex h-9 w-full rounded-md border border-input bg-background px-3 py-1 text-sm shadow-sm transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  <option value={10}>Last 10 items</option>
+                  <option value={30}>Last 30 items (Default)</option>
+                  <option value={50}>Last 50 items</option>
+                  <option value={100}>Last 100 items</option>
+                  <option value={500}>Last 500 items</option>
+                </select>
+                <p className="mt-2 text-xs text-muted-foreground">
+                  Maximum number of recent requests kept in history
                 </p>
               </div>
 

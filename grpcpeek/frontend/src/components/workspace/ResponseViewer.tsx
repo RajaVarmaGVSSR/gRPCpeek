@@ -105,8 +105,11 @@ export function ResponseViewer({ tab, onClearStreaming }: ResponseViewerProps) {
   let parsedResponse: any = null
   let parseError: string | null = null
 
-  // Only parse if there's actually a response (not empty string)
-  if (tab.response && tab.response.trim()) {
+  const LARGE_RESPONSE_THRESHOLD = 500000; // ~500KB
+  const isLargeResponse = tab.response && tab.response.length > LARGE_RESPONSE_THRESHOLD;
+
+  // Only parse if there's actually a response (not empty string) and it's not too large
+  if (tab.response && tab.response.trim() && !isLargeResponse) {
     try {
       parsedResponse = JSON.parse(tab.response)
     } catch (error) {
@@ -212,6 +215,22 @@ export function ResponseViewer({ tab, onClearStreaming }: ResponseViewerProps) {
                       messages={tab.streamingMessages.map(m => m.data)}
                       onClear={onClearStreaming || (() => {})}
                     />
+                  </div>
+                )
+              }
+              
+              // Priority 1.5: Protect against massive responses rendering and causing WebKit OOM
+              if (isLargeResponse) {
+                return (
+                  <div className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-lg border border-border/60 bg-surface items-center justify-center p-6 text-center">
+                    <div className="text-4xl mb-4 opacity-50">📦</div>
+                    <h3 className="text-lg font-semibold text-foreground mb-2">Response Too Large</h3>
+                    <p className="text-sm text-muted-foreground max-w-md mb-6">
+                      The response payload is approximately {(tab.response.length / 1024 / 1024).toFixed(2)} MB. Rendering this directly in the UI could cause the application to freeze or crash. Please download it instead.
+                    </p>
+                    <Button onClick={downloadResponse}>
+                      💾 Download Response as JSON
+                    </Button>
                   </div>
                 )
               }

@@ -572,6 +572,13 @@ async fn call_grpc_method(
         .map(|s| s.to_string())
         .unwrap_or_else(|| String::new());
 
+    let mut response_metadata = serde_json::Map::new();
+    for (name, value) in response.headers() {
+        if let Ok(val_str) = value.to_str() {
+            response_metadata.insert(name.as_str().to_string(), serde_json::Value::String(val_str.to_string()));
+        }
+    }
+
     // Check if this is a streaming method by checking method descriptor
     let is_server_streaming = method_desc.is_server_streaming();
 
@@ -731,6 +738,7 @@ async fn call_grpc_method(
         "message_count": if is_server_streaming { response_messages.len() } else { 1 },
         "request": request_json,
         "response": response_data,
+        "response_metadata": serde_json::Value::Object(response_metadata),
         "response_size": response_size,
         "note": note,
         "timestamp": chrono::Utc::now().to_rfc3339(),

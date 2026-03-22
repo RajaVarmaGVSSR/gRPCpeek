@@ -428,6 +428,7 @@ function App() {
                 onSavedRequestDelete={requestManager.handleDeleteRequest}
                 onSavedRequestRename={requestManager.handleRenameRequest}
                 onHistoryClick={requestManager.handleLoadRequest}
+                onClearHistory={workspaceManager.handleClearHistory}
                 onCreateCollection={workspaceManager.handleCreateCollection}
                 onRenameCollection={workspaceManager.handleRenameCollection}
                 onDeleteCollection={workspaceManager.handleDeleteCollection}

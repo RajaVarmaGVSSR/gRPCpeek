@@ -475,6 +475,11 @@ export function useRequestManager(
 
       // Check if this is an error response
       if (result.status === 'error') {
+        const errorStatus = { 
+          code: result.grpc_status === 'UNAVAILABLE' ? 14 : 13, 
+          message: result.error || result.grpc_message 
+        };
+
         // Structured error response from backend
         updateActiveTab({
           response: result.error || result.grpc_message || 'Unknown error',
@@ -482,15 +487,31 @@ export function useRequestManager(
             error_category: result.error_category,
             troubleshooting_hints: result.troubleshooting_hints || []
           },
-          status: { 
-            code: result.grpc_status === 'UNAVAILABLE' ? 14 : 13, 
-            message: result.error || result.grpc_message 
-          },
+          status: errorStatus,
           duration,
           responseSize,
           isLoading: false,
           isStreaming: false,
         })
+
+        const updatedWorkspace = addToHistoryV2(workspace, {
+          service: activeTab.service,
+          method: activeTab.method,
+          methodType: activeTab.methodType,
+          endpoint: endpoint,
+          requestBody: activeTab.requestBody,
+          metadata: activeTab.metadata,
+          status: errorStatus,
+          duration,
+          responseSize,
+          timestamp: new Date().toISOString(),
+          environmentId: activeTab.selectedEnvironmentId || null,
+          errorResponse: result.error || result.grpc_message || 'Unknown error',
+          responseMetadata: result.response_metadata || {},
+        })
+        saveWorkspace(updatedWorkspace)
+        setWorkspace(updatedWorkspace)
+
         return
       }
 
@@ -500,7 +521,7 @@ export function useRequestManager(
 
       updateActiveTab({
         response: formattedResponse,
-        responseMetadata: {}, // TODO: Extract metadata if needed
+        responseMetadata: result.response_metadata || {}, 
         status: { code: parseInt(result.grpc_status), message: result.grpc_message || 'OK' },
         duration,
         responseSize,
@@ -521,6 +542,7 @@ export function useRequestManager(
         responseSize,
         timestamp: new Date().toISOString(),
         environmentId: activeTab.selectedEnvironmentId || null,
+        responseMetadata: result.response_metadata || {},
       })
 
       saveWorkspace(updatedWorkspace)
@@ -530,10 +552,21 @@ export function useRequestManager(
       const errorMessage = error instanceof Error ? error.message : String(error)
       const responseSize = new Blob([errorMessage]).size
 
+      const selectedEnv = workspace.environments.find(env => env.id === activeTab.selectedEnvironmentId)
+      const host = activeTab.requestHost || selectedEnv?.host || 'localhost'
+      const port = activeTab.requestPort || selectedEnv?.port || 50051
+      const endpoint = `http://${host}:${port}`
+
+      let errorStatus = { code: 13, message: errorMessage }
+
       // Try to parse error as JSON (backend returns structured errors)
       try {
         const errorJson = JSON.parse(errorMessage)
         if (errorJson.status === 'error') {
+          errorStatus = { 
+            code: errorJson.grpc_status === 'UNAVAILABLE' ? 14 : 13, 
+            message: errorJson.error || errorJson.grpc_message 
+          }
           // Structured error response
           updateActiveTab({
             response: errorJson.error || errorJson.grpc_message || 'Unknown error',
@@ -541,14 +574,29 @@ export function useRequestManager(
               error_category: errorJson.error_category,
               troubleshooting_hints: errorJson.troubleshooting_hints || []
             },
-            status: { 
-              code: errorJson.grpc_status === 'UNAVAILABLE' ? 14 : 13, 
-              message: errorJson.error || errorJson.grpc_message 
-            },
+            status: errorStatus,
             duration,
             responseSize,
             isLoading: false,
           })
+
+          const updatedWorkspace = addToHistoryV2(workspace, {
+            service: activeTab.service,
+            method: activeTab.method,
+            methodType: activeTab.methodType,
+            endpoint: endpoint,
+            requestBody: activeTab.requestBody,
+            metadata: activeTab.metadata,
+            status: errorStatus,
+            duration,
+            responseSize,
+            timestamp: new Date().toISOString(),
+            environmentId: activeTab.selectedEnvironmentId || null,
+            errorResponse: errorJson.error || errorJson.grpc_message || 'Unknown error',
+            responseMetadata: errorJson.response_metadata || {},
+          })
+          saveWorkspace(updatedWorkspace)
+          setWorkspace(updatedWorkspace)
           return
         }
       } catch {
@@ -558,10 +606,27 @@ export function useRequestManager(
       // Plain error message
       updateActiveTab({
         response: `Error: ${errorMessage}`,
-        status: { code: 13, message: errorMessage },
+        status: errorStatus,
         duration,
         isLoading: false,
       })
+
+      const updatedWorkspace = addToHistoryV2(workspace, {
+        service: activeTab.service,
+        method: activeTab.method,
+        methodType: activeTab.methodType,
+        endpoint: endpoint,
+        requestBody: activeTab.requestBody,
+        metadata: activeTab.metadata,
+        status: errorStatus,
+        duration,
+        responseSize,
+        timestamp: new Date().toISOString(),
+        environmentId: activeTab.selectedEnvironmentId || null,
+        errorResponse: `Error: ${errorMessage}`,
+      })
+      saveWorkspace(updatedWorkspace)
+      setWorkspace(updatedWorkspace)
     }
   }, [activeTab, protoContent, workspace, setWorkspace, updateActiveTab, showToast])
 
@@ -643,42 +708,86 @@ export function useRequestManager(
     })
   }, [activeTab, workspace, setWorkspace, showToast, openModal])
 
-  const handleLoadRequest = useCallback((request: SavedRequest | HistoryEntry) => {
+  const handleLoadRequest = useCallback((request: SavedRequest | HistoryEntry, forceNew: boolean = false) => {
     const isHistory = 'timestamp' in request
-    const tabId = `${request.service}.${request.method}-${Date.now()}`
     
-    // For history entries, use the stored environmentId to restore the environment context
-    // Note: environmentId can be null (meaning no environment was selected when request was made)
-    const environmentId = isHistory 
-      ? (request as HistoryEntry).environmentId 
-      : undefined  // SavedRequest doesn't store environment - use current/default
-
-    const newTab: RequestTab = {
-      id: tabId,
-      name: isHistory ? `[History] ${request.service}.${request.method}` : request.name,
-      service: request.service,
-      method: request.method,
-      methodType: request.methodType,
-      requestBody: request.requestBody,
-      metadata: request.metadata,
-      auth: isHistory ? { type: 'none' } : request.auth,
-      response: '',
-      responseMetadata: {},
-      streamingMessages: [],
-      status: isHistory ? request.status : null,
-      duration: isHistory ? request.duration : null,
-      responseSize: isHistory ? request.responseSize : null,
-      isStreaming: false,
-      isLoading: false,
-      isDirty: false,
-      createdAt: new Date().toISOString(),
-      // Preserve null/undefined distinction - null means explicitly no env, undefined means not set
-      selectedEnvironmentId: environmentId ?? undefined,
+    // Determine the target tab
+    let targetTabId: string | null = null
+    
+    if (!forceNew) {
+      if (!isHistory) {
+        // For SavedRequests, look for a tab that was loaded from this saved request
+        const existingTab = tabs.find(t => t.savedRequestId === (request as SavedRequest).id)
+        if (existingTab) targetTabId = existingTab.id
+      }
+      
+      // If we couldn't find one by savedRequestId, or it's a history item, look for a matching service/method tab
+      if (!targetTabId) {
+        const existingTab = tabs.find(t => t.service === request.service && t.method === request.method)
+        if (existingTab) {
+          targetTabId = existingTab.id
+        }
+      }
     }
 
-    setTabs((prev) => [...prev, newTab])
-    setActiveTabId(tabId)
-  }, [])
+    const environmentId = isHistory 
+      ? (request as HistoryEntry).environmentId 
+      : undefined
+
+    if (targetTabId) {
+      // Overwrite existing tab
+      setTabs(prev => prev.map(t => {
+        if (t.id === targetTabId) {
+          return {
+            ...t,
+            name: isHistory ? t.name : request.name,
+            requestBody: request.requestBody,
+            metadata: request.metadata,
+            auth: isHistory ? { type: 'none' } : request.auth,
+            // Only restore response details if it's a history item
+            response: isHistory ? ((request as HistoryEntry).errorResponse || '') : '',
+            responseMetadata: isHistory ? ((request as HistoryEntry).responseMetadata || {}) : {},
+            status: isHistory ? request.status : null,
+            duration: isHistory ? request.duration : null,
+            responseSize: isHistory ? request.responseSize : null,
+            selectedEnvironmentId: environmentId ?? t.selectedEnvironmentId,
+            savedRequestId: isHistory ? undefined : (request as SavedRequest).id,
+            isDirty: true,
+          }
+        }
+        return t
+      }))
+      setActiveTabId(targetTabId)
+    } else {
+      // Create new tab
+      const tabId = `${request.service}.${request.method}-${Date.now()}`
+      const newTab: RequestTab = {
+        id: tabId,
+        name: isHistory ? `${request.service}.${request.method}` : request.name,
+        service: request.service,
+        method: request.method,
+        methodType: request.methodType,
+        requestBody: request.requestBody,
+        metadata: request.metadata,
+        auth: isHistory ? { type: 'none' } : request.auth,
+        response: isHistory ? ((request as HistoryEntry).errorResponse || '') : '',
+        responseMetadata: isHistory ? ((request as HistoryEntry).responseMetadata || {}) : {},
+        streamingMessages: [],
+        status: isHistory ? request.status : null,
+        duration: isHistory ? request.duration : null,
+        responseSize: isHistory ? request.responseSize : null,
+        isStreaming: false,
+        isLoading: false,
+        isDirty: false,
+        createdAt: new Date().toISOString(),
+        // Preserve null/undefined distinction - null means explicitly no env, undefined means not set
+        selectedEnvironmentId: environmentId ?? undefined,
+        savedRequestId: isHistory ? undefined : (request as SavedRequest).id,
+      }
+      setTabs(prev => [...prev, newTab])
+      setActiveTabId(tabId)
+    }
+  }, [tabs])
 
   const removeSavedRequestFromFolders = useCallback((folders: any[], requestId: string): any[] => {
     return folders
@@ -732,14 +841,17 @@ export function useRequestManager(
     showToast('Request renamed', 'success')
   }, [workspace, setWorkspace, showToast, renameRequestInFolders])
 
-  const handleMethodClick = useCallback((service: string, method: string) => {
-    const existingTab = tabs.find((t) => t.service === service && t.method === method)
-    if (existingTab) {
-      setActiveTabId(existingTab.id)
-    } else {
-      createNewTab(service, method)
+  const handleMethodClick = useCallback((service: string, method: string, forceNew: boolean = false) => {
+    if (!forceNew) {
+      const existingTab = tabs.find((t) => t.service === service && t.method === method)
+      if (existingTab) {
+        setActiveTabId(existingTab.id)
+        return
+      }
     }
+    createNewTab(service, method)
   }, [tabs, createNewTab])
+
 
   const handleCreateRequestInCollection = useCallback((
     collectionId: string,

@@ -13,11 +13,12 @@ interface SidebarProps {
   services: Service[]
   collections: Collection[]
   history: HistoryEntry[]
-  onMethodClick: (service: string, method: string) => void
+  onMethodClick: (service: string, method: string, forceNew?: boolean) => void
   onSavedRequestClick: (request: SavedRequest) => void
   onSavedRequestDelete: (requestId: string) => void
   onSavedRequestRename?: (requestId: string, newName: string) => void
   onHistoryClick: (entry: HistoryEntry) => void
+  onClearHistory?: () => void
   // Collection management
   onCreateCollection?: (name: string) => void
   onRenameCollection?: (collectionId: string, newName: string) => void
@@ -41,6 +42,7 @@ export function Sidebar({
   onSavedRequestDelete,
   onSavedRequestRename,
   onHistoryClick,
+  onClearHistory,
   onCreateCollection,
   onRenameCollection,
   onDeleteCollection,
@@ -154,11 +156,22 @@ export function Sidebar({
         {/* Header with Search */}
         <div className="border-b border-border p-3 lg:p-4">
           <div className="space-y-2">
-            <h3 className="text-sm font-semibold text-foreground">
-              {view === 'services' && '🗂️ Services'}
-              {view === 'collections' && '💾 Collections'}
-              {view === 'history' && '🕐 History'}
-            </h3>
+            <div className="flex items-center justify-between">
+              <h3 className="text-sm font-semibold text-foreground">
+                {view === 'services' && '🗂️ Services'}
+                {view === 'collections' && '💾 Collections'}
+                {view === 'history' && '🕐 History'}
+              </h3>
+              {view === 'history' && history.length > 0 && onClearHistory && (
+                <button
+                  onClick={onClearHistory}
+                  className="rounded p-1 text-xs text-muted-foreground transition-colors hover:bg-red-500/10 hover:text-red-500"
+                  title="Clear history"
+                >
+                  Clear All
+                </button>
+              )}
+            </div>
             <div className="relative">
               <Input
                 type="text"

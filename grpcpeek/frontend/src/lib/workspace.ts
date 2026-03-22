@@ -49,6 +49,12 @@ function migrateWorkspace(workspace: any): Workspace {
     tls: env.tls || { enabled: false }, // Add default TLS config if missing
   }))
 
+  const migratedTabs = (workspace.openTabs || []).map((tab: any) => ({
+    ...tab,
+    isLoading: false, // Force reset on load
+    isStreaming: false, // Force reset on load
+  }))
+
   return {
     ...workspace,
     collections: workspace.collections || [],
@@ -57,7 +63,7 @@ function migrateWorkspace(workspace: any): Workspace {
     importPaths: workspace.importPaths || [],
     // Add session state fields if missing
     services: workspace.services || [],
-    openTabs: workspace.openTabs || [],
+    openTabs: migratedTabs,
     activeTabId: workspace.activeTabId !== undefined ? workspace.activeTabId : null,
   }
 }
@@ -551,9 +557,11 @@ export function addToHistory(
     id: generateId(),
   }
   
+  const limit = workspace.historyLimit || 30;
+
   return {
     ...workspace,
-    requestHistory: [historyEntry, ...workspace.requestHistory].slice(0, 30), // Keep last 30
+    requestHistory: [historyEntry, ...workspace.requestHistory].slice(0, limit),
     updatedAt: new Date().toISOString(),
   }
 }

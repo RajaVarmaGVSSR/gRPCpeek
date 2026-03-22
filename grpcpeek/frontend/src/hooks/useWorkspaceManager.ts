@@ -26,6 +26,7 @@ import {
   addFolderToCollection,
   deleteFolderFromCollection,
   renameFolderInCollection,
+  clearHistory as clearHistoryStorage,
 } from '../lib/workspace'
 
 export interface UseWorkspaceManagerReturn {
@@ -71,6 +72,9 @@ export interface UseWorkspaceManagerReturn {
   handleCreateFolder: (collectionId: string, name: string, parentFolderId?: string) => void
   handleRenameFolder: (collectionId: string, folderId: string, newName: string) => void
   handleDeleteFolder: (collectionId: string, folderId: string) => void
+
+  // History operations
+  handleClearHistory: () => void
 
   // Low-level setters (for special cases)
   setWorkspace: React.Dispatch<React.SetStateAction<Workspace>>
@@ -281,6 +285,12 @@ export function useWorkspaceManager(): UseWorkspaceManagerReturn {
     setWorkspace(updated)
   }, [workspace])
 
+  const handleClearHistory = useCallback(() => {
+    const updated = clearHistoryStorage(workspace)
+    saveWorkspace(updated)
+    setWorkspace(updated)
+  }, [workspace])
+
   return {
     // State
     workspace,
@@ -316,6 +326,9 @@ export function useWorkspaceManager(): UseWorkspaceManagerReturn {
     handleCreateFolder,
     handleRenameFolder,
     handleDeleteFolder,
+
+    // History operations
+    handleClearHistory,
 
     // Low-level setters
     setWorkspace,
