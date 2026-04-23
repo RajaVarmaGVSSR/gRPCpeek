@@ -8,6 +8,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use http::{Uri, Request as HttpRequest};
 use hyper::{Client, Body};
+use hyper::client::HttpConnector;
+use hyper_rustls::HttpsConnector;
 use std::process::Command;
 use tempfile::NamedTempFile;
 use std::io::Write;
@@ -19,7 +21,6 @@ use rustls_pemfile::{certs, pkcs8_private_keys};
 use std::io::BufReader;
 use base64::{Engine as _, engine::general_purpose};
 use tauri::Emitter;
-use bytes::BytesMut;
 use std::sync::Mutex;
 use std::collections::HashMap;
 use tokio::sync::mpsc;
@@ -30,9 +31,7 @@ use std::os::windows::process::CommandExt;
 // Active client stream connection with channel for sending messages
 struct ActiveClientStream {
     sender: mpsc::UnboundedSender<Vec<u8>>,
-    descriptor_pool: Arc<DescriptorPool>,
     input_desc: prost_reflect::MessageDescriptor,
-    output_desc: prost_reflect::MessageDescriptor,
     response_receiver: tokio::sync::oneshot::Receiver<Result<String, String>>,
 }
 
@@ -56,6 +55,7 @@ pub struct MethodInfo {
     pub is_client_streaming: bool,
     pub is_server_streaming: bool,
     pub method_type: String,
+    pub sample_request: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -123,6 +123,64 @@ impl rustls::client::ServerCertVerifier for NoCertificateVerification {
     }
 }
 
+fn build_https_connector(tls_config: Option<&TlsConfig>) -> Result<HttpsConnector<HttpConnector>, String> {
+    if let Some(tls_cfg) = tls_config.filter(|config| config.enabled) {
+        let mut root_store = rustls::RootCertStore::empty();
+
+        if let Some(ca_path) = &tls_cfg.server_ca_cert_path {
+            let ca_certs = load_certificates_from_file(ca_path)?;
+            for cert in ca_certs {
+                root_store.add(&cert)
+                    .map_err(|e| format!("Failed to add CA certificate: {}", e))?;
+            }
+        } else {
+            root_store.add_trust_anchors(
+                webpki_roots::TLS_SERVER_ROOTS.iter().map(|ta| {
+                    rustls::OwnedTrustAnchor::from_subject_spki_name_constraints(
+                        ta.subject.to_vec(),
+                        ta.spki.to_vec(),
+                        ta.name_constraints.as_ref().map(|nc| nc.to_vec()),
+                    )
+                })
+            );
+        }
+
+        let config_builder = rustls::ClientConfig::builder()
+            .with_safe_defaults()
+            .with_root_certificates(root_store);
+
+        let client_config = if let (Some(cert_path), Some(key_path)) = (&tls_cfg.client_cert_path, &tls_cfg.client_key_path) {
+            let client_certs = load_certificates_from_file(cert_path)?;
+            let client_key = load_private_key_from_file(key_path)?;
+
+            config_builder.with_client_auth_cert(client_certs, client_key)
+                .map_err(|e| format!("Failed to configure client authentication: {}", e))?
+        } else {
+            config_builder.with_no_client_auth()
+        };
+
+        let final_config = if tls_cfg.insecure_skip_verify.unwrap_or(false) {
+            let mut config = client_config;
+            config.dangerous().set_certificate_verifier(Arc::new(NoCertificateVerification));
+            config
+        } else {
+            client_config
+        };
+
+        Ok(hyper_rustls::HttpsConnectorBuilder::new()
+            .with_tls_config(final_config)
+            .https_or_http()
+            .enable_http2()
+            .build())
+    } else {
+        Ok(hyper_rustls::HttpsConnectorBuilder::new()
+            .with_native_roots()
+            .https_or_http()
+            .enable_http2()
+            .build())
+    }
+}
+
 #[tauri::command]
 async fn parse_proto_file(proto_content: String) -> Result<Vec<ServiceInfo>, String> {
     let mut services = Vec::new();
@@ -187,6 +245,7 @@ async fn parse_proto_file(proto_content: String) -> Result<Vec<ServiceInfo>, Str
                 is_client_streaming,
                 is_server_streaming,
                 method_type,
+                sample_request: None,
             });
         }
 
@@ -195,6 +254,67 @@ async fn parse_proto_file(proto_content: String) -> Result<Vec<ServiceInfo>, Str
 
     if services.is_empty() {
         return Err("No services found in proto file".to_string());
+    }
+
+    // Try to compile proto and generate sample requests via protoc
+    if let Ok(pool) = compile_proto_to_descriptors(&proto_content) {
+        for service in &mut services {
+            for method in &mut service.methods {
+                let msg_desc = pool.all_messages().find(|m| {
+                    m.name() == method.input_type || m.full_name() == method.input_type
+                });
+                if let Some(desc) = msg_desc {
+                    let mut obj = serde_json::Map::new();
+                    for field in desc.fields() {
+                        obj.insert(
+                            field.json_name().to_string(),
+                            generate_default_value_for_field(&field),
+                        );
+                    }
+                    if let Ok(json) = serde_json::to_string_pretty(&Value::Object(obj)) {
+                        method.sample_request = Some(json);
+                    }
+                }
+            }
+        }
+    }
+
+    // Fallback: regex-based stub for any methods still without a sample
+    let message_re = Regex::new(r"message\s+(\w+)\s*\{([\s\S]*?)\}")
+        .map_err(|e| format!("Failed to compile message regex: {}", e))?;
+    let field_re = Regex::new(
+        r"(?:repeated\s+|optional\s+)?(?:double|float|int32|int64|uint32|uint64|sint32|sint64|fixed32|fixed64|sfixed32|sfixed64|bool|string|bytes|[A-Za-z0-9_.]+)\s+(\w+)\s*="
+    )
+    .map_err(|e| format!("Failed to compile field regex: {}", e))?;
+
+    let mut message_fields: std::collections::HashMap<String, Vec<String>> = std::collections::HashMap::new();
+    for cap in message_re.captures_iter(&proto_content) {
+        let msg_name = cap.get(1).map(|m| m.as_str().to_string()).unwrap_or_default();
+        let body = cap.get(2).map(|m| m.as_str()).unwrap_or("");
+        let fields: Vec<String> = field_re
+            .captures_iter(body)
+            .filter_map(|fc| fc.get(1).map(|m| m.as_str().to_string()))
+            .collect();
+        message_fields.entry(msg_name).or_default().extend(fields);
+    }
+
+    for service in &mut services {
+        for method in &mut service.methods {
+            if method.sample_request.is_some() {
+                continue;
+            }
+            let simple_name = method.input_type.split('.').last().unwrap_or(&method.input_type);
+            let mut obj = serde_json::Map::new();
+            if let Some(fields) = message_fields.get(simple_name) {
+                for field_name in fields {
+                    let json_name = snake_to_camel(field_name);
+                    obj.insert(json_name, Value::String(String::new()));
+                }
+            }
+            if let Ok(json) = serde_json::to_string_pretty(&Value::Object(obj)) {
+                method.sample_request = Some(json);
+            }
+        }
     }
 
     Ok(services)
@@ -254,6 +374,23 @@ fn compile_proto_to_descriptors(proto_content: &str) -> Result<DescriptorPool, S
         .map_err(|e| format!("Failed to decode FileDescriptorSet: {}", e))?;
 
     Ok(pool)
+}
+
+/// Convert snake_case to camelCase
+fn snake_to_camel(s: &str) -> String {
+    let mut result = String::new();
+    let mut capitalize_next = false;
+    for ch in s.chars() {
+        if ch == '_' {
+            capitalize_next = true;
+        } else if capitalize_next {
+            result.extend(ch.to_uppercase());
+            capitalize_next = false;
+        } else {
+            result.push(ch);
+        }
+    }
+    result
 }
 
 // Helper function to format error responses as JSON for consistent frontend parsing
@@ -348,13 +485,13 @@ async fn call_grpc_method(
         return Err("Either proto_content or import_paths must be provided".to_string());
     };
 
-    // Extract package name from the first service found
-    let first_service = descriptor_pool
+    // Find the service and method descriptors
+    let service_desc = descriptor_pool
         .services()
-        .next()
-        .ok_or_else(|| "No services found in proto".to_string())?;
-    
-    let package_name = first_service.parent_file().package_name().to_string();
+        .find(|s| s.name() == service)
+        .ok_or_else(|| format!("Service '{}' not found in proto", service))?;
+
+    let package_name = service_desc.parent_file().package_name().to_string();
 
     // Build the gRPC path: /package.ServiceName/MethodName
     let grpc_path = if !package_name.is_empty() {
@@ -362,12 +499,6 @@ async fn call_grpc_method(
     } else {
         format!("/{}/{}", service, method)
     };
-
-    // Find the service and method descriptors
-    let service_desc = descriptor_pool
-        .services()
-        .find(|s| s.name() == service)
-        .ok_or_else(|| format!("Service '{}' not found in proto", service))?;
 
     let method_desc = service_desc
         .methods()
@@ -445,70 +576,7 @@ async fn call_grpc_method(
         .body(Body::from(request_body))
         .map_err(|e| format!("Failed to build request: {}", e))?;
 
-    // Create HTTP client with or without TLS
-    let https_connector = if use_tls {
-        let tls_cfg = tls_config.as_ref().unwrap();
-        
-        // Build TLS configuration
-        let mut root_store = rustls::RootCertStore::empty();
-        
-        // Load CA certificates
-        if let Some(ca_path) = &tls_cfg.server_ca_cert_path {
-            let ca_certs = load_certificates_from_file(ca_path)?;
-            for cert in ca_certs {
-                root_store.add(&cert)
-                    .map_err(|e| format!("Failed to add CA certificate: {}", e))?;
-            }
-        } else {
-            // Use system root certificates
-            root_store.add_trust_anchors(
-                webpki_roots::TLS_SERVER_ROOTS.iter().map(|ta| {
-                    rustls::OwnedTrustAnchor::from_subject_spki_name_constraints(
-                        ta.subject.to_vec(),
-                        ta.spki.to_vec(),
-                        ta.name_constraints.as_ref().map(|nc| nc.to_vec()),
-                    )
-                })
-            );
-        }
-        
-        let config_builder = rustls::ClientConfig::builder()
-            .with_safe_defaults()
-            .with_root_certificates(root_store);
-        
-        // Handle client certificates (mTLS)
-        let client_config = if let (Some(cert_path), Some(key_path)) = (&tls_cfg.client_cert_path, &tls_cfg.client_key_path) {
-            let client_certs = load_certificates_from_file(cert_path)?;
-            let client_key = load_private_key_from_file(key_path)?;
-            
-            config_builder.with_client_auth_cert(client_certs, client_key)
-                .map_err(|e| format!("Failed to configure client authentication: {}", e))?
-        } else {
-            config_builder.with_no_client_auth()
-        };
-        
-        // Handle insecure skip verify
-        let final_config = if tls_cfg.insecure_skip_verify.unwrap_or(false) {
-            let mut config = client_config;
-            config.dangerous().set_certificate_verifier(Arc::new(NoCertificateVerification));
-            config
-        } else {
-            client_config
-        };
-        
-        hyper_rustls::HttpsConnectorBuilder::new()
-            .with_tls_config(final_config)
-            .https_or_http()
-            .enable_http2()
-            .build()
-    } else {
-        // For non-TLS, still use HttpsConnector but with native roots
-        hyper_rustls::HttpsConnectorBuilder::new()
-            .with_native_roots()
-            .https_or_http()
-            .enable_http2()
-            .build()
-    };
+    let https_connector = build_https_connector(tls_config.as_ref())?;
 
     let client = Client::builder()
         .http2_only(true)
@@ -789,6 +857,47 @@ fn generate_default_value_for_field(field: &prost_reflect::FieldDescriptor) -> V
 }
 
 #[tauri::command]
+fn open_response_in_temp_file(file_name: String, contents: String) -> Result<String, String> {
+    let sanitized_name = Regex::new(r#"[^A-Za-z0-9._-]"#)
+        .map_err(|e| format!("Failed to build filename sanitizer: {}", e))?
+        .replace_all(&file_name, "_")
+        .into_owned();
+
+    let temp_path = std::env::temp_dir().join(sanitized_name);
+    std::fs::write(&temp_path, contents)
+        .map_err(|e| format!("Failed to write temp response file: {}", e))?;
+
+    let mut command = if cfg!(target_os = "macos") {
+        let mut command = Command::new("open");
+        command.arg(&temp_path);
+        command
+    } else if cfg!(target_os = "windows") {
+        let mut command = Command::new("cmd");
+        command.args(["/C", "start", "", &temp_path.to_string_lossy()]);
+        command
+    } else {
+        let mut command = Command::new("xdg-open");
+        command.arg(&temp_path);
+        command
+    };
+
+    #[cfg(windows)]
+    command.creation_flags(0x08000000);
+
+    command
+        .spawn()
+        .map_err(|e| format!("Failed to open response file: {}", e))?;
+
+    Ok(temp_path.to_string_lossy().to_string())
+}
+
+#[tauri::command]
+fn save_response_to_file(path: String, contents: String) -> Result<(), String> {
+    std::fs::write(&path, contents)
+        .map_err(|e| format!("Failed to save response file '{}': {}", path, e))
+}
+
+#[tauri::command]
 async fn generate_sample_request(message_type: String, proto_content: String) -> Result<String, String> {
     // Compile proto to get descriptor pool
     let descriptor_pool = compile_proto_to_descriptors(&proto_content)
@@ -867,9 +976,7 @@ async fn start_client_stream(
     let is_bidirectional = method_desc.is_client_streaming() && method_desc.is_server_streaming();
     println!("[CLIENT_STREAMING] Method is bidirectional: {}", is_bidirectional);
     
-    // Build gRPC path
-    let first_service = descriptor_pool.services().next().unwrap();
-    let package_name = first_service.parent_file().package_name().to_string();
+    let package_name = service_desc.parent_file().package_name().to_string();
     let grpc_path = if !package_name.is_empty() {
         format!("/{}.{}/{}", package_name, service, method)
     } else {
@@ -895,7 +1002,7 @@ async fn start_client_stream(
     // Clone values for the async task
     let metadata_clone = metadata.clone();
     let auth_clone = auth.clone();
-    let descriptor_pool_clone = descriptor_pool.clone();
+    let tls_config_clone = tls_config.clone();
     let output_desc_clone = output_desc.clone();
     let tab_id_clone = tab_id.clone();
     let app_clone = app.clone();
@@ -948,12 +1055,7 @@ async fn start_client_stream(
                 .body(body_receiver)
                 .map_err(|e| format!("Failed to build request: {}", e))?;
             
-            // Create HTTP client
-            let https_connector = hyper_rustls::HttpsConnectorBuilder::new()
-                .with_native_roots()
-                .https_or_http()
-                .enable_http2()
-                .build();
+            let https_connector = build_https_connector(tls_config_clone.as_ref())?;
             
             let client = Client::builder()
                 .http2_only(true)
@@ -1102,9 +1204,7 @@ async fn start_client_stream(
     // Store the active stream
     let stream = ActiveClientStream {
         sender: message_tx,
-        descriptor_pool: descriptor_pool.clone(),
         input_desc: input_desc.clone(),
-        output_desc: output_desc.clone(),
         response_receiver: response_rx,
     };
     
@@ -1132,7 +1232,7 @@ async fn send_stream_message(
     };
     
     // Parse and encode the message
-    let request_json: Value = serde_json::from_str(&body)
+    let _request_json: Value = serde_json::from_str(&body)
         .map_err(|e| format!("Failed to parse JSON: {}", e))?;
     
     let mut deserializer = serde_json::Deserializer::from_str(&body);
@@ -1191,6 +1291,8 @@ fn main() {
             call_grpc_method,
             generate_sample_request,
             parse_proto_files,
+            open_response_in_temp_file,
+            save_response_to_file,
             start_client_stream,
             send_stream_message,
             finish_streaming

@@ -1,67 +1,68 @@
-# Certificate Generation README
+# Test Certificates
 
-This directory contains scripts to generate TLS certificates for testing the gRPC server with various security configurations.
+This directory contains scripts for generating local TLS certificates used by the gRPCpeek test server.
 
-> **⚠️ Important**: The generated certificates (`.pem` files) are **not committed to git** for security reasons. Each developer must generate their own certificates locally using the provided scripts.
+The generated `.pem` files are ignored by git. They are for local development only and should never be used in production.
 
 ## Prerequisites
 
-You need OpenSSL installed on your system:
+Install OpenSSL:
 
-- **Windows**: See [WINDOWS-OPENSSL-INSTALL.md](./WINDOWS-OPENSSL-INSTALL.md) for detailed installation guide
-  - Quick: Download from https://slproweb.com/products/Win32OpenSSL.html
-  - Or use Chocolatey: `choco install openssl`
-- **macOS**: `brew install openssl`
-- **Linux**: Usually pre-installed, or `sudo apt-get install openssl` / `sudo yum install openssl`
+- macOS: `brew install openssl`
+- Debian/Ubuntu: `sudo apt-get install openssl`
+- Fedora: `sudo dnf install openssl`
+- Windows: install OpenSSL with your preferred package manager, for example `choco install openssl`, or use a standard Windows OpenSSL installer.
 
-### Windows Users - OpenSSL Installation
+## Generate certificates
 
-If you get **"'openssl' is not recognized"** error on Windows:
-👉 **See [WINDOWS-OPENSSL-INSTALL.md](./WINDOWS-OPENSSL-INSTALL.md)** for step-by-step installation instructions.
+Linux or macOS:
 
-## Generating Certificates
-
-### On Linux/macOS:
-```bash
+```sh
 chmod +x generate-certs.sh
 ./generate-certs.sh
 ```
 
-### On Windows:
-```batch
+Windows Command Prompt:
+
+```bat
 generate-certs.bat
 ```
 
-## Generated Files
+PowerShell:
 
-After running the script, you'll have:
-
-| File | Description | Use Case |
-|------|-------------|----------|
-| `ca-cert.pem` | Certificate Authority certificate | Custom CA for TLS verification |
-| `ca-key.pem` | CA private key | Signing certificates |
-| `server-cert.pem` | Server certificate | Server-side TLS |
-| `server-key.pem` | Server private key | Server-side TLS |
-| `client-cert.pem` | Client certificate | Client authentication (mTLS) |
-| `client-key.pem` | Client private key | Client authentication (mTLS) |
-| `self-signed-cert.pem` | Self-signed certificate | Testing insecureSkipVerify |
-| `self-signed-key.pem` | Self-signed private key | Testing insecureSkipVerify |
-
-## Security Warning
-
-⚠️ **These certificates are for testing purposes only!** 
-
-- Never use these in production
-- Keys are not password-protected
-- Certificate validity is only 365 days
-- Using common test subject names
-
-## Re-generating Certificates
-
-You can safely re-run the script to generate new certificates. The script will overwrite existing files.
-
-To start fresh:
-```bash
-rm *.pem *.srl
-./generate-certs.sh  # or generate-certs.bat on Windows
+```powershell
+.\generate-certs.ps1
 ```
+
+## Generated files
+
+| File | Purpose |
+| --- | --- |
+| `ca-cert.pem` | Local CA certificate for server verification. |
+| `ca-key.pem` | Local CA private key. |
+| `server-cert.pem` | Server certificate for TLS mode. |
+| `server-key.pem` | Server private key for TLS mode. |
+| `client-cert.pem` | Client certificate for mTLS mode. |
+| `client-key.pem` | Client private key for mTLS mode. |
+| `self-signed-cert.pem` | Self-signed server certificate for insecure skip verify testing. |
+| `self-signed-key.pem` | Self-signed server private key. |
+
+## Regenerate certificates
+
+It is safe to regenerate these files:
+
+```sh
+rm -f *.pem *.srl
+./generate-certs.sh
+```
+
+On Windows, delete the generated `.pem` and `.srl` files, then run `generate-certs.bat` or `generate-certs.ps1` again.
+
+## Security note
+
+These certificates are intentionally simple local test fixtures:
+
+- Private keys are not password-protected.
+- Subject names are generic.
+- Validity is limited.
+- They are not suitable for production systems.

@@ -5,9 +5,10 @@ import { Card, MethodTypeBadge } from '../ui'
 interface ServicesListProps {
   services: Service[]
   onMethodClick: (service: string, method: string, forceNew?: boolean) => void
+  onOpenWorkspaceSettings?: () => void
 }
 
-export function ServicesList({ services, onMethodClick }: ServicesListProps) {
+export function ServicesList({ services, onMethodClick, onOpenWorkspaceSettings }: ServicesListProps) {
   const [expandedServices, setExpandedServices] = useState<Set<string>>(new Set())
 
   const toggleService = (serviceName: string) => {
@@ -37,14 +38,7 @@ export function ServicesList({ services, onMethodClick }: ServicesListProps) {
           </div>
           <div className="pt-2">
             <button
-              onClick={() => {
-                // This will be handled by the parent component
-                // For now, show hint to user
-                const settingsButton = document.querySelector('[title="Workspace settings"]') as HTMLElement
-                if (settingsButton) {
-                  settingsButton.click()
-                }
-              }}
+              onClick={onOpenWorkspaceSettings}
               className="inline-flex items-center gap-2 rounded bg-primary px-4 py-2 text-sm font-medium text-primary-foreground transition-colors hover:bg-primary/90"
             >
               ⚙️ Open Workspace Settings

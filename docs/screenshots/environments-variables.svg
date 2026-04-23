@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="800" viewBox="0 0 1200 800" role="img" aria-labelledby="title desc">
+  <title id="title">Environments and variables screenshot placeholder</title>
+  <desc id="desc">Replace this placeholder with a screenshot of environment and variable settings.</desc>
+  <rect width="1200" height="800" fill="#f6f8fb"/>
+  <rect x="140" y="80" width="920" height="640" rx="16" fill="#ffffff" stroke="#d7deea" stroke-width="3"/>
+  <rect x="140" y="80" width="920" height="76" rx="16" fill="#eef1f8"/>
+  <rect x="180" y="195" width="220" height="470" rx="8" fill="#f1f4fa" stroke="#d7deea" stroke-width="2"/>
+  <rect x="430" y="195" width="590" height="470" rx="8" fill="#ffffff" stroke="#d7deea" stroke-width="2"/>
+  <text x="600" y="380" text-anchor="middle" font-family="Inter, Arial, sans-serif" font-size="34" font-weight="700" fill="#141b2c">Environments + Variables</text>
+  <text x="600" y="430" text-anchor="middle" font-family="Inter, Arial, sans-serif" font-size="20" fill="#47506b">Replace docs/screenshots/environments-variables.svg</text>
+</svg>

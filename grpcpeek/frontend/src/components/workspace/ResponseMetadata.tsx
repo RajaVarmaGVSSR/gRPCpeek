@@ -1,10 +1,11 @@
 interface ResponseMetadataProps {
-  metadata: Record<string, string | number | undefined>
+  metadata: Record<string, unknown>
 }
 
 export function ResponseMetadata({ metadata }: ResponseMetadataProps) {
   // Filter out null/undefined values
   const entries = Object.entries(metadata).filter(([_, value]) => value !== undefined && value !== null)
+  const responseCount = Number(metadata.response_count ?? 0)
 
   if (entries.length === 0) {
     return null
@@ -13,7 +14,8 @@ export function ResponseMetadata({ metadata }: ResponseMetadataProps) {
   // Format display names
   const formatKey = (key: string) => {
     return key
-      .split('_')
+      .replace(/-/g, ' ')
+      .split(/[_\s]+/)
       .map(word => word.charAt(0).toUpperCase() + word.slice(1))
       .join(' ')
   }
@@ -34,9 +36,9 @@ export function ResponseMetadata({ metadata }: ResponseMetadataProps) {
       <div className="flex items-center gap-3 px-4 py-2.5 border-b border-border/30 bg-surface-muted/50">
         <span className="text-sm font-medium text-muted-foreground">Metadata</span>
         {getStatusBadge()}
-        {metadata.response_count && Number(metadata.response_count) > 0 && (
+        {responseCount > 0 && (
           <span className="text-xs text-muted-foreground">
-            • {metadata.response_count} {Number(metadata.response_count) === 1 ? 'response' : 'responses'}
+            • {responseCount} {responseCount === 1 ? 'response' : 'responses'}
           </span>
         )}
       </div>

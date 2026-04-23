@@ -153,7 +153,7 @@ export interface RequestTab {
   
   // Response data
   response: string
-  responseMetadata: Record<string, string>  // gRPC metadata/trailers
+  responseMetadata: Record<string, any>  // gRPC metadata/trailers and structured error hints
   streamingMessages: StreamMessage[]
   status: GrpcStatus | null
   duration: number | null  // ms

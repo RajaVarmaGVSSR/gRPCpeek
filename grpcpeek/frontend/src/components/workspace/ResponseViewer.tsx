@@ -7,6 +7,26 @@ import { StreamingResponsePanel } from './StreamingResponsePanel'
 import { useToast } from '../../contexts/ToastContext'
 import type { RequestTab } from '../../types/workspace'
 
+const LARGE_RESPONSE_THRESHOLD = 500000
+const LARGE_RESPONSE_PREVIEW_LIMIT = 12000
+
+function formatBytes(bytes: number) {
+  if (bytes < 1024) {
+    return `${bytes} B`
+  }
+
+  const units = ['KB', 'MB', 'GB']
+  let value = bytes / 1024
+  let unitIndex = 0
+
+  while (value >= 1024 && unitIndex < units.length - 1) {
+    value /= 1024
+    unitIndex += 1
+  }
+
+  return `${value.toFixed(value >= 10 ? 1 : 2)} ${units[unitIndex]}`
+}
+
 interface ResponseViewerProps {
   tab: RequestTab | null
   onClearStreaming?: () => void
@@ -15,6 +35,8 @@ interface ResponseViewerProps {
 export function ResponseViewer({ tab, onClearStreaming }: ResponseViewerProps) {
   const [showRaw, setShowRaw] = useState(false)
   const [activeTab, setActiveTab] = useState<'body' | 'metadata'>('body')
+  const [allowLargeResponseRender, setAllowLargeResponseRender] = useState(false)
+  const [confirmUnsafeRender, setConfirmUnsafeRender] = useState(false)
   const { showToast } = useToast()
 
   // Auto-switch to body tab when response arrives
@@ -23,6 +45,11 @@ export function ResponseViewer({ tab, onClearStreaming }: ResponseViewerProps) {
       setActiveTab('body')
     }
   }, [tab?.response, tab?.streamingMessages?.length])
+
+  useEffect(() => {
+    setAllowLargeResponseRender(false)
+    setConfirmUnsafeRender(false)
+  }, [tab?.id, tab?.response])
 
   if (!tab) {
     return (
@@ -51,29 +78,51 @@ export function ResponseViewer({ tab, onClearStreaming }: ResponseViewerProps) {
     )
   }
 
-  const copyToClipboard = async () => {
+  const copyText = async (content: string, successMessage: string, errorMessage: string) => {
     try {
-      await navigator.clipboard.writeText(tab.response)
-      showToast('Response copied to clipboard', 'success')
+      await navigator.clipboard.writeText(content)
+      showToast(successMessage, 'success')
     } catch (error) {
       console.error('Failed to copy:', error)
-      showToast('Failed to copy response', 'error')
+      showToast(errorMessage, 'error')
     }
+  }
+
+  const responseContent = tab.streamingMessages.length > 0
+    ? tab.streamingMessages.map(m => JSON.stringify(m.data, null, 2)).join('\n')
+    : tab.response
+  const responseSize = tab.responseSize || new Blob([responseContent]).size
+  const isLargeResponse = Boolean(tab.response && tab.response.length > LARGE_RESPONSE_THRESHOLD)
+  const shouldBlockLargeRender = isLargeResponse && !allowLargeResponseRender
+  const responsePreview = isLargeResponse
+    ? `${tab.response.slice(0, LARGE_RESPONSE_PREVIEW_LIMIT)}${tab.response.length > LARGE_RESPONSE_PREVIEW_LIMIT ? '\n\n… Preview truncated. Download the full response for the complete payload.' : ''}`
+    : tab.response
+  const metadataPayload = {
+    grpc_status: tab.status?.code?.toString() || '0',
+    grpc_message: tab.status?.message || 'OK',
+    request_started: new Date(tab.createdAt).toLocaleString(),
+    request_completed: tab.duration ? new Date(new Date(tab.createdAt).getTime() + tab.duration).toLocaleString() : 'N/A',
+    duration_ms: tab.duration?.toString() || 'N/A',
+    response_count: (tab.streamingMessages.length > 0 ? tab.streamingMessages.length : (tab.response ? 1 : 0)).toString(),
+    response_size_bytes: responseSize.toString(),
+    ...tab.responseMetadata,
+  }
+
+  const copyToClipboard = async () => {
+    const contentToCopy = shouldBlockLargeRender ? responsePreview : responseContent
+    const successMessage = shouldBlockLargeRender ? 'Response preview copied to clipboard' : 'Response copied to clipboard'
+    const errorMessage = shouldBlockLargeRender ? 'Failed to copy response preview' : 'Failed to copy response'
+    await copyText(contentToCopy, successMessage, errorMessage)
+  }
+
+  const copyMetadata = async () => {
+    await copyText(JSON.stringify(metadataPayload, null, 2), 'Metadata copied to clipboard', 'Failed to copy metadata')
   }
 
   const downloadResponse = async () => {
     try {
       // Determine the content to save
-      let content: string
-      if (tab.streamingMessages.length > 0) {
-        // For streaming responses, save in grpcurl format
-        content = tab.streamingMessages
-          .map(m => JSON.stringify(m.data, null, 2))
-          .join('\n')
-      } else {
-        // For unary responses, save the raw response
-        content = tab.response
-      }
+      const content = responseContent
 
       // Open native save dialog
       const filePath = await save({
@@ -85,8 +134,7 @@ export function ResponseViewer({ tab, onClearStreaming }: ResponseViewerProps) {
       })
 
       if (filePath) {
-        // Write the file using Tauri's invoke command
-        await invoke('plugin:fs|write_text_file', { 
+        await invoke('save_response_to_file', {
           path: filePath, 
           contents: content 
         })
@@ -98,6 +146,30 @@ export function ResponseViewer({ tab, onClearStreaming }: ResponseViewerProps) {
     }
   }
 
+  const openResponseExternally = async () => {
+    try {
+      const tempPath = await invoke<string>('open_response_in_temp_file', {
+        fileName: `${tab.service}-${tab.method}-${Date.now()}.json`,
+        contents: responseContent,
+      })
+      showToast(`Opened response externally (${tempPath.split('/').pop()})`, 'success')
+    } catch (error) {
+      console.error('Failed to open response externally:', error)
+      showToast('Failed to open response externally', 'error')
+    }
+  }
+
+  const enableUnsafeRender = () => {
+    if (!confirmUnsafeRender) {
+      setConfirmUnsafeRender(true)
+      return
+    }
+
+    setAllowLargeResponseRender(true)
+    setConfirmUnsafeRender(false)
+    showToast('Rendering the full response in-app. This may use significant memory.', 'info')
+  }
+
   // Parse response
   // Note: The frontend stores result.response directly (not the full result object)
   // - For streaming: result.response is an array of messages
@@ -105,11 +177,8 @@ export function ResponseViewer({ tab, onClearStreaming }: ResponseViewerProps) {
   let parsedResponse: any = null
   let parseError: string | null = null
 
-  const LARGE_RESPONSE_THRESHOLD = 500000; // ~500KB
-  const isLargeResponse = tab.response && tab.response.length > LARGE_RESPONSE_THRESHOLD;
-
   // Only parse if there's actually a response (not empty string) and it's not too large
-  if (tab.response && tab.response.trim() && !isLargeResponse) {
+  if (tab.response && tab.response.trim() && (!isLargeResponse || allowLargeResponseRender)) {
     try {
       parsedResponse = JSON.parse(tab.response)
     } catch (error) {
@@ -131,9 +200,9 @@ export function ResponseViewer({ tab, onClearStreaming }: ResponseViewerProps) {
             variant="ghost"
             size="sm"
             onClick={copyToClipboard}
-            title="Copy to clipboard"
+            title={shouldBlockLargeRender ? 'Copy safe preview to clipboard' : 'Copy to clipboard'}
           >
-            📋 Copy
+            {shouldBlockLargeRender ? '📋 Preview' : '📋 Copy'}
           </Button>
           <Button
             variant="ghost"
@@ -143,7 +212,7 @@ export function ResponseViewer({ tab, onClearStreaming }: ResponseViewerProps) {
           >
             💾 Download
           </Button>
-          {activeTab === 'body' && (
+          {activeTab === 'body' && !shouldBlockLargeRender && (
             <Button
               variant="ghost"
               size="sm"
@@ -220,17 +289,101 @@ export function ResponseViewer({ tab, onClearStreaming }: ResponseViewerProps) {
               }
               
               // Priority 1.5: Protect against massive responses rendering and causing WebKit OOM
-              if (isLargeResponse) {
+              if (shouldBlockLargeRender) {
                 return (
-                  <div className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-lg border border-border/60 bg-surface items-center justify-center p-6 text-center">
-                    <div className="text-4xl mb-4 opacity-50">📦</div>
-                    <h3 className="text-lg font-semibold text-foreground mb-2">Response Too Large</h3>
-                    <p className="text-sm text-muted-foreground max-w-md mb-6">
-                      The response payload is approximately {(tab.response.length / 1024 / 1024).toFixed(2)} MB. Rendering this directly in the UI could cause the application to freeze or crash. Please download it instead.
-                    </p>
-                    <Button onClick={downloadResponse}>
-                      💾 Download Response as JSON
-                    </Button>
+                  <div className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-lg border border-border/60 bg-surface">
+                    <div className="border-b border-border/40 bg-surface-muted/30 px-5 py-4">
+                      <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+                        <div className="space-y-2">
+                          <div className="flex items-center gap-3">
+                            <div className="flex h-11 w-11 items-center justify-center rounded-2xl bg-surface-muted text-2xl">
+                              📦
+                            </div>
+                            <div>
+                              <h3 className="text-lg font-semibold text-foreground">Large response protected</h3>
+                              <p className="text-sm text-muted-foreground">
+                                The full body is available, but rendering it inside the app is blocked by default to protect the webview.
+                              </p>
+                            </div>
+                          </div>
+                          <div className="grid gap-3 sm:grid-cols-3">
+                            <div className="rounded-xl border border-border/50 bg-surface px-3 py-2">
+                              <div className="text-[11px] uppercase tracking-wide text-muted-foreground">Payload size</div>
+                              <div className="mt-1 text-sm font-semibold text-foreground">{formatBytes(responseSize)}</div>
+                            </div>
+                            <div className="rounded-xl border border-border/50 bg-surface px-3 py-2">
+                              <div className="text-[11px] uppercase tracking-wide text-muted-foreground">UI threshold</div>
+                              <div className="mt-1 text-sm font-semibold text-foreground">{formatBytes(LARGE_RESPONSE_THRESHOLD)}</div>
+                            </div>
+                            <div className="rounded-xl border border-border/50 bg-surface px-3 py-2">
+                              <div className="text-[11px] uppercase tracking-wide text-muted-foreground">Available now</div>
+                              <div className="mt-1 text-sm font-semibold text-foreground">Preview + download</div>
+                            </div>
+                          </div>
+                        </div>
+                        <div className="flex flex-wrap gap-2 lg:max-w-sm lg:justify-end">
+                          <Button variant="secondary" size="sm" onClick={downloadResponse}>
+                            💾 Download Full Response
+                          </Button>
+                          <Button variant="secondary" size="sm" onClick={openResponseExternally}>
+                            ↗ Open Externally
+                          </Button>
+                          <Button variant="ghost" size="sm" onClick={copyToClipboard}>
+                            📋 Copy Preview
+                          </Button>
+                          <Button variant="ghost" size="sm" onClick={copyMetadata}>
+                            🧾 Copy Metadata
+                          </Button>
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="flex-1 overflow-y-auto p-5">
+                      <div className="mb-4 rounded-xl border border-amber-500/30 bg-amber-500/10 p-3 text-sm text-amber-900 dark:text-amber-100">
+                        <div className="font-medium">Why this is blocked</div>
+                        <div className="mt-1 text-amber-900/80 dark:text-amber-100/80">
+                          Large JSON payloads can freeze or crash the embedded webview. Use the preview below to verify the response, then download or open the full payload outside the app if you need full inspection.
+                        </div>
+                      </div>
+
+                      <div className="rounded-xl border border-border/50 bg-surface-muted/20">
+                        <div className="flex items-center justify-between border-b border-border/40 px-4 py-2">
+                          <div>
+                            <h4 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Safe preview</h4>
+                            <p className="mt-1 text-xs text-muted-foreground">
+                              Showing the first {formatBytes(new Blob([responsePreview]).size)} of the response body.
+                            </p>
+                          </div>
+                          <Button variant="ghost" size="sm" onClick={copyToClipboard}>
+                            Copy Preview
+                          </Button>
+                        </div>
+                        <div className="max-h-[26rem] overflow-y-auto p-4">
+                          <pre className="whitespace-pre-wrap break-words font-mono text-xs text-foreground">
+                            {responsePreview}
+                          </pre>
+                        </div>
+                      </div>
+
+                      <div className="mt-4 rounded-xl border border-red-500/25 bg-red-500/5 p-4">
+                        <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+                          <div>
+                            <h4 className="text-sm font-semibold text-foreground">Advanced option</h4>
+                            <p className="mt-1 text-sm text-muted-foreground">
+                              Rendering the full payload in-app may consume significant memory and can still lock up the window on some machines.
+                            </p>
+                            {confirmUnsafeRender && (
+                              <p className="mt-2 text-sm text-red-700 dark:text-red-300">
+                                Click again to confirm you want to render the complete response inside the app.
+                              </p>
+                            )}
+                          </div>
+                          <Button variant={confirmUnsafeRender ? 'danger' : 'secondary'} size="sm" onClick={enableUnsafeRender}>
+                            {confirmUnsafeRender ? 'Render Full Response Anyway' : 'Try Rendering Anyway'}
+                          </Button>
+                        </div>
+                      </div>
+                    </div>
                   </div>
                 )
               }
@@ -339,18 +492,15 @@ export function ResponseViewer({ tab, onClearStreaming }: ResponseViewerProps) {
 
         {/* Metadata Tab */}
         {activeTab === 'metadata' && (
-          <div className="flex-1 overflow-y-auto">
-            <ResponseMetadata 
-              metadata={{
-                grpc_status: tab.status?.code?.toString() || '0',
-                grpc_message: tab.status?.message || 'OK',
-                request_started: new Date(tab.createdAt).toLocaleString(),
-                request_completed: tab.duration ? new Date(new Date(tab.createdAt).getTime() + tab.duration).toLocaleString() : 'N/A',
-                duration_ms: tab.duration?.toString() || 'N/A',
-                response_count: (tab.streamingMessages.length > 0 ? tab.streamingMessages.length : (tab.response ? 1 : 0)).toString(),
-                response_size_bytes: tab.responseSize?.toString() || 'N/A',
-              }} 
-            />
+          <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-hidden">
+            <div className="flex justify-end gap-2">
+              <Button variant="ghost" size="sm" onClick={copyMetadata}>
+                🧾 Copy Metadata
+              </Button>
+            </div>
+            <div className="flex-1 overflow-y-auto">
+              <ResponseMetadata metadata={metadataPayload} />
+            </div>
           </div>
         )}
 

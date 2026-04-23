@@ -122,16 +122,24 @@ pub fn parse_proto_files(import_paths: Vec<ImportPath>) -> ProtoParseResult {
         Err(err) => {
             errors.push(ProtoParseError {
                 file: "protoc".to_string(),
-                message: err,
+                message: err.clone(),
                 suggestion: Some("Ensure protoc is installed and import paths are correct".to_string()),
             });
+            warnings.push(format!(
+                "Sample request generation unavailable: protoc compilation failed ({}). Methods will have no pre-filled request bodies.",
+                err
+            ));
             None
         }
     };
 
-    if let Some(pool) = descriptor_pool {
-        enrich_with_samples(&mut services, &pool, &mut warnings);
+    if let Some(ref pool) = descriptor_pool {
+        enrich_with_samples(&mut services, pool, &mut warnings);
     }
+
+    // Fallback: generate stub samples for any methods still missing them
+    // This ensures every method has at least a minimal sample, even if protoc failed
+    generate_stub_samples(&mut services, &proto_files, &mut warnings);
 
     services.sort_by(|a, b| {
         let pkg_cmp = a.package_name.cmp(&b.package_name);
@@ -572,6 +580,84 @@ fn find_relative_proto_path_from_roots(proto_path: &Path, roots: &[PathBuf]) -> 
 }
 
 
+/// Fallback: generate stub sample requests by regex-parsing message definitions
+/// from the proto source text. Used when protoc compilation fails or when
+/// a descriptor for a particular message can't be found in the pool.
+fn generate_stub_samples(
+    services: &mut [Service],
+    proto_files: &[(PathBuf, String)],
+    warnings: &mut Vec<String>,
+) {
+    // Collect all message definitions from proto source text via regex
+    let message_re = Regex::new(r"message\s+(\w+)\s*\{([\s\S]*?)\}").expect("valid message regex");
+    let field_re = Regex::new(
+        r"(?:repeated\s+|optional\s+)?(?:double|float|int32|int64|uint32|uint64|sint32|sint64|fixed32|fixed64|sfixed32|sfixed64|bool|string|bytes|[A-Za-z0-9_.]+)\s+(\w+)\s*="
+    ).expect("valid field regex");
+
+    // Build a map of message_name -> list of field names
+    let mut message_fields: std::collections::HashMap<String, Vec<String>> = std::collections::HashMap::new();
+    for (_path, content) in proto_files {
+        for cap in message_re.captures_iter(content) {
+            let msg_name = cap.get(1).map(|m| m.as_str().to_string()).unwrap_or_default();
+            let body = cap.get(2).map(|m| m.as_str()).unwrap_or("");
+            let fields: Vec<String> = field_re
+                .captures_iter(body)
+                .filter_map(|fc| fc.get(1).map(|m| m.as_str().to_string()))
+                .collect();
+            message_fields.entry(msg_name).or_default().extend(fields);
+        }
+    }
+
+    let mut stub_count = 0;
+    for service in services.iter_mut() {
+        for method in service.methods.iter_mut() {
+            if method.sample_request.is_some() {
+                continue;
+            }
+
+            // Try to build a stub from the regex-parsed fields
+            let simple_name = method.input_type.split('.').last().unwrap_or(&method.input_type);
+            let mut obj = Map::new();
+            if let Some(fields) = message_fields.get(simple_name) {
+                for field_name in fields {
+                    // Convert snake_case to camelCase for JSON
+                    let json_name = to_camel_case(field_name);
+                    obj.insert(json_name, Value::String(String::new()));
+                }
+            }
+            // Even if no fields found, set an empty object so the user gets *something*
+            if let Ok(json) = serde_json::to_string_pretty(&Value::Object(obj)) {
+                method.sample_request = Some(json);
+                stub_count += 1;
+            }
+        }
+    }
+
+    if stub_count > 0 {
+        warnings.push(format!(
+            "{} method(s) used regex-based stub samples (less accurate than protoc-generated ones)",
+            stub_count
+        ));
+    }
+}
+
+/// Convert snake_case to camelCase
+fn to_camel_case(s: &str) -> String {
+    let mut result = String::new();
+    let mut capitalize_next = false;
+    for ch in s.chars() {
+        if ch == '_' {
+            capitalize_next = true;
+        } else if capitalize_next {
+            result.extend(ch.to_uppercase());
+            capitalize_next = false;
+        } else {
+            result.push(ch);
+        }
+    }
+    result
+}
+
 fn enrich_with_samples(
     services: &mut [Service],
     descriptor_pool: &DescriptorPool,
@@ -771,3 +857,121 @@ pub fn compile_proto_from_paths(import_paths: Vec<ImportPath>) -> Result<Descrip
 
 // Proto file parsing with import resolution
 // Multi-phase parsing: discovery → dependency graph → validation → topological parse
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_parse_test_server_protos() {
+        let import_paths = vec![ImportPath {
+            id: "test-1".to_string(),
+            path: concat!(env!("CARGO_MANIFEST_DIR"), "/../../test-server/proto").to_string(),
+            path_type: "directory".to_string(),
+            enabled: true,
+        }];
+
+        let result = parse_proto_files(import_paths);
+
+        println!("Success: {}", result.success);
+        println!("\nERRORS ({}):", result.errors.len());
+        for err in &result.errors {
+            println!("  [{}] {}", err.file, err.message);
+            if let Some(s) = &err.suggestion {
+                println!("    Suggestion: {}", s);
+            }
+        }
+        println!("\nWARNINGS ({}):", result.warnings.len());
+        for w in &result.warnings {
+            println!("  {}", w);
+        }
+        println!("\nSERVICES ({}):", result.services.len());
+        for svc in &result.services {
+            println!("  Service: {} (package: {:?})", svc.name, svc.package_name);
+            for method in &svc.methods {
+                let has_sample = method.sample_request.is_some();
+                let sample_preview = method.sample_request.as_ref()
+                    .map(|s| if s.len() > 80 { format!("{}...", &s[..80]) } else { s.clone() })
+                    .unwrap_or_else(|| "NONE".to_string());
+                println!(
+                    "    {} ({}) input={} | sample={}  preview={}",
+                    method.name, method.method_type, method.input_type, has_sample, sample_preview
+                );
+            }
+        }
+
+        assert!(result.success, "Parsing should succeed");
+        assert!(!result.services.is_empty(), "Should find services");
+
+        // Check that ALL methods have sample requests
+        let mut missing_samples = Vec::new();
+        for svc in &result.services {
+            for method in &svc.methods {
+                if method.sample_request.is_none() {
+                    missing_samples.push(format!("{}.{} (input: {})", svc.name, method.name, method.input_type));
+                }
+            }
+        }
+        assert!(
+            missing_samples.is_empty(),
+            "Methods missing sample requests:\n  {}",
+            missing_samples.join("\n  ")
+        );
+    }
+
+    #[test]
+    fn test_stub_fallback_generates_samples() {
+        // Test the regex-based stub fallback by using generate_stub_samples directly
+        // on services that have no sample_request yet
+        let proto_content = r#"
+syntax = "proto3";
+package test;
+
+service TestService {
+  rpc DoSomething (DoRequest) returns (DoResponse);
+}
+
+message DoRequest {
+  string name = 1;
+  int32 count = 2;
+  bool active = 3;
+}
+
+message DoResponse {
+  string result = 1;
+}
+"#;
+        let proto_files = vec![(
+            PathBuf::from("test.proto"),
+            proto_content.to_string(),
+        )];
+
+        let mut services = vec![Service {
+            name: "TestService".to_string(),
+            package_name: Some("test".to_string()),
+            methods: vec![Method {
+                name: "DoSomething".to_string(),
+                input_type: "DoRequest".to_string(),
+                output_type: "DoResponse".to_string(),
+                is_client_streaming: false,
+                is_server_streaming: false,
+                method_type: "unary".to_string(),
+                sample_request: None, // Simulate protoc failure
+            }],
+            source_proto: None,
+        }];
+
+        let mut warnings = Vec::new();
+        generate_stub_samples(&mut services, &proto_files, &mut warnings);
+
+        let sample = services[0].methods[0].sample_request.as_ref()
+            .expect("Stub should have generated a sample");
+        println!("Stub sample: {}", sample);
+
+        let parsed: Value = serde_json::from_str(sample).expect("Should be valid JSON");
+        let obj = parsed.as_object().expect("Should be an object");
+        assert!(obj.contains_key("name"), "Should contain 'name' field");
+        assert!(obj.contains_key("count"), "Should contain 'count' field");
+        assert!(obj.contains_key("active"), "Should contain 'active' field");
+    }
+}

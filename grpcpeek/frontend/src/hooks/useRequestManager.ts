@@ -199,8 +199,7 @@ export function useRequestManager(
         requestBody: '',
         selectedEnvironmentId: defaultEnv?.id,
         metadata: {},
-        auth: defaultEnv?.auth ? { ...defaultEnv.auth } : { type: 'none' },
-        tls: defaultEnv?.tls ? { ...defaultEnv.tls } : { enabled: false },
+        auth: { type: 'none' },
         response: '',
         responseMetadata: {},
         streamingMessages: [],
@@ -230,11 +229,10 @@ export function useRequestManager(
       method,
       methodType: methodObj.methodType,
       requestBody: methodObj.sampleRequest || '',  // Auto-populate with pre-computed sample
-      // Link to environment but don't copy its settings (inherit at runtime)
+      // Link to environment but don't copy auth/TLS settings (inherit at runtime)
       selectedEnvironmentId: defaultEnv?.id,
       metadata: {},  // Start empty - environment metadata is inherited at runtime
-      auth: defaultEnv?.auth ? { ...defaultEnv.auth } : { type: 'none' },
-      tls: defaultEnv?.tls ? { ...defaultEnv.tls } : { enabled: false },
+      auth: { type: 'none' },
       response: '',
       responseMetadata: {},
       streamingMessages: [],
@@ -339,15 +337,26 @@ export function useRequestManager(
         const port = activeTab.requestPort || selectedEnv?.port || 50051
         const endpoint = `http://${host}:${port}`
         
+        const variableContext: VariableContext = {
+          environmentVariables: selectedEnv?.variables || [],
+          globalVariables: workspace.globals || [],
+        }
+
         // Merge metadata
         const mergedMetadata = {
-          ...(selectedEnv?.metadata || {}),
+          ...(activeTab.disableEnvironmentMetadata ? {} : (selectedEnv?.metadata || {})),
           ...(activeTab.metadata || {}),
         }
+        const metadataResult = resolveMetadataVariables(mergedMetadata, variableContext)
         
         // Get effective auth and TLS
         const effectiveAuth = activeTab.auth.type !== 'none' ? activeTab.auth : (selectedEnv?.auth || { type: 'none' })
         const effectiveTls = activeTab.tls || selectedEnv?.tls || { enabled: false }
+
+        if (metadataResult.unresolved.length > 0) {
+          const unresolvedList = metadataResult.unresolved.map(v => v.placeholder).join(', ')
+          showToast(`Warning: Unresolved variables: ${unresolvedList}`, 'info')
+        }
         
         // Prepare import paths if proto content is not available
         const importPaths = protoContent ? undefined : workspace.importPaths.filter(ip => ip.enabled)
@@ -360,7 +369,7 @@ export function useRequestManager(
           endpoint,
           protoContent: protoContent || undefined,
           importPaths,
-          metadata: mergedMetadata,
+          metadata: metadataResult.resolved,
           auth: effectiveAuth,
           tlsConfig: effectiveTls,
         })
@@ -921,11 +930,10 @@ export function useRequestManager(
         throw new Error('Method not found')
       }
 
-      // Use pre-computed sample from parsing (should always be available)
       if (method.sampleRequest) {
         updateActiveTab({ requestBody: method.sampleRequest, isDirty: true })
       } else {
-        // If no pre-computed sample available, show error with helpful message
+        // Sample should always be available after parsing; if missing, re-parse is needed
         updateActiveTab({ 
           response: 'No sample available. Try re-parsing proto files from Workspace Settings.' 
         })
@@ -952,11 +960,31 @@ export function useRequestManager(
     }
 
     try {
+      const selectedEnv = workspace.environments.find(env => env.id === activeTab.selectedEnvironmentId)
+      const variableContext: VariableContext = {
+        environmentVariables: selectedEnv?.variables || [],
+        globalVariables: workspace.globals || [],
+      }
+      const bodyResult = resolveVariables(message.body, variableContext)
+
+      try {
+        JSON.parse(bodyResult.resolved)
+      } catch (parseError) {
+        const errorMessage = parseError instanceof Error ? parseError.message : 'Unknown error'
+        showToast(`Invalid JSON after variable resolution: ${errorMessage}`, 'error')
+        return
+      }
+
+      if (bodyResult.unresolvedVars.length > 0) {
+        const unresolvedList = bodyResult.unresolvedVars.map(v => v.placeholder).join(', ')
+        showToast(`Warning: Unresolved variables: ${unresolvedList}`, 'info')
+      }
+
       // Call backend to send the message
       await invoke('send_stream_message', { 
         tabId: activeTab.id,
         messageId,
-        body: message.body 
+        body: bodyResult.resolved
       })
       
       // Mark message as sent with timestamp
@@ -976,7 +1004,7 @@ export function useRequestManager(
       console.error('Error sending stream message:', error)
       showToast(`Error sending message: ${error}`, 'error')
     }
-  }, [activeTab, updateActiveTab, showToast])
+  }, [activeTab, workspace.environments, workspace.globals, updateActiveTab, showToast])
 
   const handleFinishStreaming = useCallback(async () => {
     if (!activeTab) return

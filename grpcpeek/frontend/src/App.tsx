@@ -424,6 +424,7 @@ function App() {
                 collections={workspaceManager.workspace.collections}
                 history={workspaceManager.workspace.requestHistory}
                 onMethodClick={requestManager.handleMethodClick}
+                onOpenWorkspaceSettings={() => openWorkspaceSettings('imports')}
                 onSavedRequestClick={requestManager.handleLoadRequest}
                 onSavedRequestDelete={requestManager.handleDeleteRequest}
                 onSavedRequestRename={requestManager.handleRenameRequest}
@@ -517,7 +518,7 @@ function App() {
                         <p className="text-xs text-muted-foreground border-t border-border/50 pt-4 text-center">
                           💡 <strong>Getting Started:</strong> Configure proto import paths in{' '}
                           <button
-                            onClick={() => openWorkspaceSettings()}
+                            onClick={() => openWorkspaceSettings('imports')}
                             className="text-primary hover:underline font-medium"
                           >
                             Workspace Settings

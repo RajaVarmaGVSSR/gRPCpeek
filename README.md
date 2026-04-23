@@ -1,107 +1,234 @@
 # gRPCpeek
 
-gRPCpeek is an open-source desktop client for exploring and testing gRPC services. It combines a Tauri (Rust) backend with a modern React + TypeScript frontend, giving developers a lightweight native experience across macOS, Windows, and Linux.
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![Built with Tauri](https://img.shields.io/badge/Built%20with-Tauri-24c8db.svg)](https://tauri.app/)
+[![React](https://img.shields.io/badge/Frontend-React%20%2B%20TypeScript-61dafb.svg)](https://react.dev/)
 
-## Project Vision
+gRPCpeek is an open-source desktop client for exploring, testing, and debugging gRPC APIs. It gives you a native, lightweight workspace for importing proto files, sending gRPC requests, inspecting responses, and organizing the requests you use every day.
 
-Our goal is to deliver a Postman-class workflow for gRPC without the bloat:
-- Import proto definitions and build organized collections of services.
-- Configure environments (hosts, ports, TLS/auth settings) and reuse them across requests.
-- Craft requests with structured metadata, send them instantly, and inspect responses in detail.
+It is built with Tauri, Rust, React, TypeScript, and Tailwind CSS.
 
-## 📦 Installation
+![gRPCpeek app overview](docs/screenshots/app-overview.svg)
 
-### Download Pre-Built Releases (Recommended)
+## Why gRPCpeek?
 
-Get the latest stable version from our [**Releases page**](https://github.com/RajaVarmaGVSSR/gRPCpeek/releases).
+Most gRPC tooling is either too heavy, too terminal-centric, or too narrow for everyday API work. gRPCpeek focuses on a clean desktop workflow:
 
-**Portable Executables** (no installation required) ⭐:
-- **Windows**: Download `gRPCpeek-vX.X.X-windows-portable.zip`, extract, and run `grpcpeek.exe`
-- **macOS**: Download `gRPCpeek-vX.X.X-macos-portable.zip`, extract, run `xattr -cr gRPCpeek.app`, then open the app
-- **Linux**: Download `grpcpeek_X.X.X_amd64.AppImage`, make it executable (`chmod +x`), and run
+- Import proto files or proto directories and discover services automatically.
+- Send unary, server streaming, client streaming, and bidirectional streaming requests.
+- Work with environments for hosts, ports, auth, TLS, metadata, and variables.
+- Save reusable requests into collections and folders.
+- Inspect response bodies, status, metadata, timing, size, and streaming output.
+- Keep request history for repeat debugging sessions.
+- Run locally as a small native app across macOS, Windows, and Linux.
 
-**Traditional Installers**:
-- Windows: `.msi` or `-setup.exe`
-- macOS: `.dmg` 
-- Linux: `.deb`
+## Screenshots
 
-> ⚠️ **Note**: Our builds are currently unsigned. Windows may show SmartScreen warnings, and macOS will require Gatekeeper bypass. This is normal for free, open-source builds.
+Replace the placeholder files in [docs/screenshots](docs/screenshots/README.md) with real captures before publishing a release announcement.
 
-### Build from Source
+| Workspace and request editor | Response inspector |
+| --- | --- |
+| ![Workspace and request editor](docs/screenshots/workspace-request-editor.svg) | ![Response inspector](docs/screenshots/response-inspector.svg) |
 
-Want to build locally or contribute to development? See the [Development Setup](#getting-started) section below.
+| Environments and variables | Streaming workflow |
+| --- | --- |
+| ![Environments and variables](docs/screenshots/environments-variables.svg) | ![Streaming workflow](docs/screenshots/streaming-workflow.svg) |
 
-## Repository Layout
+## Features
 
-```
-grpcpeek/
-├── frontend/          # React + Vite UI (TypeScript, Tailwind)
-├── src-tauri/         # Tauri/Rust backend, commands, generated bindings
-├── test-server/       # Sample Node.js gRPC server for local testing
-└── README.md          # This file
-```
+### Proto discovery
 
-## Getting Started
+- Import individual `.proto` files or directories.
+- Resolve multi-file proto projects with imports.
+- View discovered services and methods in a searchable sidebar.
+- Generate sample JSON request bodies from parsed message descriptors.
 
-> 💡 **Just want to use gRPCpeek?** Download a pre-built release from the [Installation](#-installation) section above.
+### Request workspace
 
-This section is for developers who want to build from source or contribute to the project.
+- Open multiple request tabs.
+- Choose service and method directly in the request editor.
+- Edit JSON request bodies with formatting support.
+- Add request-specific metadata.
+- Use `{{env.variableName}}` and `{{global.variableName}}` placeholders in request bodies.
+
+### Environments, auth, and TLS
+
+- Create workspace-level environments with host and port defaults.
+- Store environment variables and global variables.
+- Configure default metadata per environment.
+- Use bearer token, basic auth, or API key authentication.
+- Configure TLS, server CA certificates, client certificates, client keys, and self-signed development flows.
+
+### Streaming support
+
+- Unary calls.
+- Server streaming.
+- Client streaming with multiple queued messages.
+- Bidirectional streaming with live responses.
+
+### Responses and history
+
+- View formatted or raw JSON responses.
+- Inspect gRPC status, response metadata, timing, response size, and message count.
+- Copy or download responses.
+- Open large responses externally.
+- Re-run requests from local history.
+
+### Collections
+
+- Save requests into collections.
+- Organize requests with nested folders.
+- Rename and delete saved requests, folders, and collections.
+
+## Install
+
+Pre-built builds are intended to be published from the GitHub [Releases](https://github.com/RajaVarmaGVSSR/gRPCpeek/releases) page.
+
+Because this is an open-source desktop app, early builds may be unsigned. Windows SmartScreen or macOS Gatekeeper may show a warning until signed releases are available.
+
+Expected release artifacts:
+
+- Windows: `.msi`, setup `.exe`, or portable zip.
+- macOS: `.dmg` or `.app` archive.
+- Linux: `.deb` or `.AppImage`.
+
+## Build from source
 
 ### Prerequisites
 
-- Node.js 18+
-- Rust toolchain (latest stable)
-- Cargo prerequisites for Tauri (per platform):
-  - Windows: Microsoft Visual C++ Build Tools, WebView2 runtime
-  - macOS: Xcode Command Line Tools
-  - Linux: `webkit2gtk`, `openssl`, `gtk3`, `libsoup2`, `librsvg2`
+- Node.js 18 or newer.
+- Rust stable and Cargo.
+- Tauri platform dependencies for your operating system.
 
-### Install dependencies
+Useful references:
 
-```powershell
-cd grpcpeek/frontend
-npm install
+- [Tauri prerequisites](https://tauri.app/start/prerequisites/)
+- [Rust installation](https://www.rust-lang.org/tools/install)
+- [Node.js downloads](https://nodejs.org/)
 
-cd ..\src-tauri
-cargo check
+Linux users usually need WebKitGTK and system libraries. On Debian or Ubuntu, start with:
+
+```sh
+sudo apt-get update
+sudo apt-get install -y \
+  build-essential \
+  curl \
+  wget \
+  libssl-dev \
+  libgtk-3-dev \
+  libayatana-appindicator3-dev \
+  librsvg2-dev \
+  libwebkit2gtk-4.1-dev
 ```
 
-### Run the app in development
+### Clone and install
 
-```powershell
-cd c:\DATA\Projects\gRPCpeek\grpcpeek
+```sh
+git clone https://github.com/RajaVarmaGVSSR/gRPCpeek.git
+cd gRPCpeek
+
+cd grpcpeek/frontend
+npm install
+```
+
+### Run in development
+
+From the `grpcpeek` app directory:
+
+```sh
+cd grpcpeek
 cargo tauri dev
 ```
 
-This command launches the Vite dev server on port `1420` and starts the Tauri shell with hot reload for both Rust and frontend changes.
+This starts the Vite frontend on `localhost:1420` and opens the Tauri desktop shell.
 
-### Build for production
+### Build a production app
 
-```powershell
+```sh
+cd grpcpeek
 cargo tauri build
 ```
 
-The build orchestrates a frontend production bundle and packages platform-specific binaries.
+Build output is generated under `grpcpeek/src-tauri/target/release/bundle`.
+
+### Validation commands
+
+```sh
+cd grpcpeek/frontend
+npm run build
+
+cd ../src-tauri
+cargo check
+```
+
+## Test server
+
+This repository includes a sample gRPC server in [test-server](test-server/README.md). It is useful for local testing because it includes multiple proto files, imports, TLS modes, mTLS, self-signed certificates, and all gRPC streaming patterns.
+
+Start it in insecure mode:
+
+```sh
+cd test-server
+npm install
+npm start
+```
+
+The server listens on `localhost:50051` by default.
+
+For TLS and mTLS testing, see [test-server/certs](test-server/certs/README.md).
+
+## Repository layout
+
+```text
+.
+├── grpcpeek/
+│   ├── frontend/        # React, TypeScript, Vite, Tailwind UI
+│   └── src-tauri/       # Tauri 2 and Rust backend
+├── test-server/         # Local gRPC server for manual testing
+├── docs/
+│   └── screenshots/     # Screenshot placeholders for README assets
+├── LICENSE
+└── README.md
+```
 
 ## Contributing
 
-We welcome contributions of all sizes. To get started:
+Contributions are welcome. Bug reports, design feedback, docs improvements, and small focused pull requests are all useful.
 
-1. Fork the repository and create a topic branch from `main` (or the current default branch).
-2. Run `cargo fmt` and `npm run lint` before submitting PRs.
-3. Add tests or sample usage when introducing new behavior.
-4. Open a pull request describing the motivation, implementation details, and testing notes.
+Before opening a pull request:
 
-Check open issues or file a new one if you discover bugs or have feature ideas.
+1. Create a focused branch from the default branch.
+2. Keep changes scoped to one feature, fix, or cleanup.
+3. Run `npm run build` in `grpcpeek/frontend`.
+4. Run `cargo check` in `grpcpeek/src-tauri`.
+5. Describe what changed, why it changed, and how you tested it.
+
+Good first contributions include:
+
+- Improving proto parsing edge cases.
+- Expanding the test server scenarios.
+- Adding keyboard shortcuts.
+- Improving accessibility and responsive layout.
+- Polishing docs and screenshots.
+
+## Roadmap
+
+Ideas being explored:
+
+- Signed release builds.
+- Import and export for collections and workspaces.
+- More response visualization tools.
+- Request scripting or lightweight assertions.
+- GitHub Actions release automation.
+
+Open an issue if you want to help shape any of these.
+
+## Security
+
+Please do not open a public issue for sensitive security reports. Until a formal security policy is added, contact the maintainer privately or open a minimal issue asking for a private disclosure channel.
 
 ## License
 
-gRPCpeek is licensed under the [MIT License](LICENSE).
+gRPCpeek is released under the [MIT License](LICENSE).
 
-## Community & Support
-
-- **Issues**: Use GitHub Issues for bugs, feature requests, and questions.
-- **Discussions**: Share usage tips or propose larger design changes in Discussions (once enabled).
-- **Security**: Report vulnerabilities privately via email (security policy TBD) until a formal process is documented.
-
-Thanks for checking out gRPCpeek—your feedback and contributions help shape the next-generation gRPC client experience!
+Copyright (c) 2025 V S S R Rajavarma Ganapathiraju.

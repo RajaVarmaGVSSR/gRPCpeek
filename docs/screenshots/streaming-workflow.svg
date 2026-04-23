@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="800" viewBox="0 0 1200 800" role="img" aria-labelledby="title desc">
+  <title id="title">Streaming workflow screenshot placeholder</title>
+  <desc id="desc">Replace this placeholder with a screenshot of client or bidirectional streaming.</desc>
+  <rect width="1200" height="800" fill="#f6f8fb"/>
+  <rect x="70" y="70" width="1060" height="660" rx="14" fill="#ffffff" stroke="#d7deea" stroke-width="3"/>
+  <rect x="110" y="125" width="470" height="550" rx="8" fill="#ffffff" stroke="#d7deea" stroke-width="2"/>
+  <rect x="620" y="125" width="470" height="550" rx="8" fill="#f1f4fa" stroke="#d7deea" stroke-width="2"/>
+  <circle cx="600" cy="400" r="28" fill="#2563eb"/>
+  <path d="M590 388 L612 400 L590 412 Z" fill="#ffffff"/>
+  <text x="600" y="485" text-anchor="middle" font-family="Inter, Arial, sans-serif" font-size="34" font-weight="700" fill="#141b2c">Streaming Workflow</text>
+  <text x="600" y="535" text-anchor="middle" font-family="Inter, Arial, sans-serif" font-size="20" fill="#47506b">Replace docs/screenshots/streaming-workflow.svg</text>
+</svg>

@@ -14,6 +14,7 @@ interface SidebarProps {
   collections: Collection[]
   history: HistoryEntry[]
   onMethodClick: (service: string, method: string, forceNew?: boolean) => void
+  onOpenWorkspaceSettings?: () => void
   onSavedRequestClick: (request: SavedRequest) => void
   onSavedRequestDelete: (requestId: string) => void
   onSavedRequestRename?: (requestId: string, newName: string) => void
@@ -38,6 +39,7 @@ export function Sidebar({
   collections,
   history,
   onMethodClick,
+  onOpenWorkspaceSettings,
   onSavedRequestClick,
   onSavedRequestDelete,
   onSavedRequestRename,
@@ -210,6 +212,7 @@ export function Sidebar({
               <ServicesList
                 services={filteredServices}
                 onMethodClick={onMethodClick}
+                onOpenWorkspaceSettings={onOpenWorkspaceSettings}
               />
             )}
           </div>
