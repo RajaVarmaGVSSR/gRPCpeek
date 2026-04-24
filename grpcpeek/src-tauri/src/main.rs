@@ -321,59 +321,27 @@ async fn parse_proto_file(proto_content: String) -> Result<Vec<ServiceInfo>, Str
 }
 
 fn compile_proto_to_descriptors(proto_content: &str) -> Result<DescriptorPool, String> {
-    // Create temporary proto file
     let mut proto_file = NamedTempFile::with_suffix(".proto")
         .map_err(|e| format!("Failed to create temp proto file: {}", e))?;
-
     proto_file.write_all(proto_content.as_bytes())
         .map_err(|e| format!("Failed to write proto content: {}", e))?;
 
-    // Create temporary output file for FileDescriptorSet
-    let descriptor_file = NamedTempFile::with_suffix(".pb")
-        .map_err(|e| format!("Failed to create temp descriptor file: {}", e))?;
+    let proto_path = proto_file.path().to_path_buf();
+    let proto_dir = proto_path.parent()
+        .ok_or("Failed to get proto file directory")?;
+    let file_name = proto_path
+        .file_name()
+        .ok_or("Failed to get proto filename")?
+        .to_string_lossy()
+        .to_string();
 
-    let descriptor_path = descriptor_file.path().to_string_lossy();
+    let fds = protox::compile(vec![file_name.as_str()], vec![proto_dir])
+        .map_err(|e| format!("Failed to compile proto: {}", e))?;
 
-    let proto_path = proto_file.path().parent()
-        .ok_or("Failed to get proto file directory")?
-        .to_string_lossy();
-
-    // Run protoc to generate FileDescriptorSet
-    let mut command = Command::new("protoc");
-    
-    // On Windows, prevent the console window from appearing
-    #[cfg(windows)]
-    command.creation_flags(0x08000000); // CREATE_NO_WINDOW
-    
-    let output = command
-        .args(&[
-            "--descriptor_set_out",
-            &descriptor_path,
-            "--proto_path",
-            &proto_path,
-            "--include_imports",
-            proto_file.path().file_name()
-                .ok_or("Failed to get proto filename")?
-                .to_string_lossy()
-                .as_ref(),
-        ])
-        .output()
-        .map_err(|e| format!("Failed to run protoc: {}. Make sure protoc is installed and in PATH.", e))?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(format!("protoc failed: {}", stderr));
-    }
-
-    // Read the generated FileDescriptorSet
-    let descriptor_bytes = std::fs::read(&*descriptor_path)
-        .map_err(|e| format!("Failed to read descriptor file: {}", e))?;
-
-    // Decode into DescriptorPool
-    let pool = DescriptorPool::decode(descriptor_bytes.as_slice())
-        .map_err(|e| format!("Failed to decode FileDescriptorSet: {}", e))?;
-
-    Ok(pool)
+    // proto_file stays alive until here, keeping the temp file on disk during compilation
+    let bytes = fds.encode_to_vec();
+    DescriptorPool::decode(bytes.as_slice())
+        .map_err(|e| format!("Failed to decode FileDescriptorSet: {}", e))
 }
 
 /// Convert snake_case to camelCase

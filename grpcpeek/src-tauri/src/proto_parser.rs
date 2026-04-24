@@ -1,17 +1,12 @@
+use prost::Message;
+use prost_reflect::{DescriptorPool, FieldDescriptor, MessageDescriptor};
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::Command;
-use tempfile::TempDir;
 use walkdir::WalkDir;
-
-#[cfg(windows)]
-use std::os::windows::process::CommandExt;
-
-use prost_reflect::{DescriptorPool, FieldDescriptor, MessageDescriptor};
 
 const MAX_SAMPLE_DEPTH: usize = 4;
 
@@ -121,12 +116,12 @@ pub fn parse_proto_files(import_paths: Vec<ImportPath>) -> ProtoParseResult {
         Ok(pool) => Some(pool),
         Err(err) => {
             errors.push(ProtoParseError {
-                file: "protoc".to_string(),
+                file: "proto_compilation".to_string(),
                 message: err.clone(),
-                suggestion: Some("Ensure protoc is installed and import paths are correct".to_string()),
+                suggestion: Some("Check your proto file syntax and import paths".to_string()),
             });
             warnings.push(format!(
-                "Sample request generation unavailable: protoc compilation failed ({}). Methods will have no pre-filled request bodies.",
+                "Sample request generation unavailable: proto compilation failed ({}). Methods will have no pre-filled request bodies.",
                 err
             ));
             None
@@ -136,10 +131,6 @@ pub fn parse_proto_files(import_paths: Vec<ImportPath>) -> ProtoParseResult {
     if let Some(ref pool) = descriptor_pool {
         enrich_with_samples(&mut services, pool, &mut warnings);
     }
-
-    // Fallback: generate stub samples for any methods still missing them
-    // This ensures every method has at least a minimal sample, even if protoc failed
-    generate_stub_samples(&mut services, &proto_files, &mut warnings);
 
     services.sort_by(|a, b| {
         let pkg_cmp = a.package_name.cmp(&b.package_name);
@@ -351,22 +342,10 @@ fn compile_proto_bundle(
         return Err("No proto files available for compilation".to_string());
     }
 
-    // Create temp directory only for the output descriptor file
-    let temp_dir = TempDir::new()
-        .map_err(|e| format!("Failed to create temporary directory: {}", e))?;
-    let descriptor_path = temp_dir.path().join("bundle.pb");
-
-    // Extract all import statements from proto files
     let all_imports = extract_all_imports(proto_files);
-    eprintln!("[proto_parser] Found imports: {:?}", all_imports);
-
-    // Collect all proto_paths we need to add
     let proto_paths = discover_proto_paths(import_paths, &all_imports);
 
-    // IMPORTANT: Only compile files that define services, not ALL proto files
-    // Dependencies (like google/type/money.proto) will be pulled in by --include_imports
-    // This avoids "already defined" errors when the same file is both a discovered 
-    // proto file AND an import
+    // Only compile files that define services; imports are pulled in transitively
     let service_files: Vec<&(PathBuf, String)> = proto_files
         .iter()
         .filter(|(_, content)| has_service_definition(content))
@@ -376,54 +355,20 @@ fn compile_proto_bundle(
         return Err("No proto files with service definitions found".to_string());
     }
 
-    eprintln!("[proto_parser] Compiling {} service files (out of {} total proto files)", 
-        service_files.len(), proto_files.len());
-    eprintln!("[proto_parser] Import paths: {:?}", import_paths.iter().map(|p| &p.path).collect::<Vec<_>>());
+    let relative_service_files: Vec<String> = service_files
+        .iter()
+        .map(|(path, _)| {
+            find_relative_proto_path_from_roots(path, &proto_paths)
+                .unwrap_or_else(|| path.to_string_lossy().to_string())
+                .replace('\\', "/")
+        })
+        .collect();
 
-    let mut command = Command::new("protoc");
-    
-    // On Windows, prevent the console window from appearing
-    #[cfg(windows)]
-    command.creation_flags(0x08000000); // CREATE_NO_WINDOW
-    
-    command.arg("--descriptor_set_out").arg(&descriptor_path);
-    command.arg("--include_imports");
-    
-    for proto_path in &proto_paths {
-        command.arg("--proto_path").arg(proto_path);
-        eprintln!("[proto_parser] Added proto_path: {}", proto_path.display());
-    }
+    let fds = protox::compile(&relative_service_files, &proto_paths)
+        .map_err(|e| format!("Proto compilation failed: {}", e))?;
 
-    // Only add proto files that define services
-    for (original_path, _content) in &service_files {
-        // Try to find the relative path from one of the proto_paths
-        let proto_arg = find_relative_proto_path_from_roots(original_path, &proto_paths)
-            .unwrap_or_else(|| original_path.to_string_lossy().to_string());
-        
-        // Normalize path separators for protoc
-        let normalized = proto_arg.replace('\\', "/");
-        eprintln!("[proto_parser] Adding service file: {} -> {}", original_path.display(), normalized);
-        command.arg(&normalized);
-    }
-
-    eprintln!("[proto_parser] Running protoc with args: {:?}", command);
-
-    let output = command.output().map_err(|e| {
-        format!(
-            "Failed to run protoc: {}. Ensure protoc is installed and in PATH.",
-            e
-        )
-    })?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(format!("protoc failed: {}", stderr.trim()));
-    }
-
-    let descriptor_bytes = fs::read(&descriptor_path)
-        .map_err(|e| format!("Failed to read descriptor set: {}", e))?;
-
-    DescriptorPool::decode(descriptor_bytes.as_slice())
+    let bytes = fds.encode_to_vec();
+    DescriptorPool::decode(bytes.as_slice())
         .map_err(|e| format!("Failed to decode descriptor set: {}", e))
 }
 
@@ -580,104 +525,16 @@ fn find_relative_proto_path_from_roots(proto_path: &Path, roots: &[PathBuf]) -> 
 }
 
 
-/// Fallback: generate stub sample requests by regex-parsing message definitions
-/// from the proto source text. Used when protoc compilation fails or when
-/// a descriptor for a particular message can't be found in the pool.
-fn generate_stub_samples(
-    services: &mut [Service],
-    proto_files: &[(PathBuf, String)],
-    warnings: &mut Vec<String>,
-) {
-    // Collect all message definitions from proto source text via regex
-    let message_re = Regex::new(r"message\s+(\w+)\s*\{([\s\S]*?)\}").expect("valid message regex");
-    let field_re = Regex::new(
-        r"(?:repeated\s+|optional\s+)?(?:double|float|int32|int64|uint32|uint64|sint32|sint64|fixed32|fixed64|sfixed32|sfixed64|bool|string|bytes|[A-Za-z0-9_.]+)\s+(\w+)\s*="
-    ).expect("valid field regex");
-
-    // Build a map of message_name -> list of field names
-    let mut message_fields: std::collections::HashMap<String, Vec<String>> = std::collections::HashMap::new();
-    for (_path, content) in proto_files {
-        for cap in message_re.captures_iter(content) {
-            let msg_name = cap.get(1).map(|m| m.as_str().to_string()).unwrap_or_default();
-            let body = cap.get(2).map(|m| m.as_str()).unwrap_or("");
-            let fields: Vec<String> = field_re
-                .captures_iter(body)
-                .filter_map(|fc| fc.get(1).map(|m| m.as_str().to_string()))
-                .collect();
-            message_fields.entry(msg_name).or_default().extend(fields);
-        }
-    }
-
-    let mut stub_count = 0;
-    for service in services.iter_mut() {
-        for method in service.methods.iter_mut() {
-            if method.sample_request.is_some() {
-                continue;
-            }
-
-            // Try to build a stub from the regex-parsed fields
-            let simple_name = method.input_type.split('.').last().unwrap_or(&method.input_type);
-            let mut obj = Map::new();
-            if let Some(fields) = message_fields.get(simple_name) {
-                for field_name in fields {
-                    // Convert snake_case to camelCase for JSON
-                    let json_name = to_camel_case(field_name);
-                    obj.insert(json_name, Value::String(String::new()));
-                }
-            }
-            // Even if no fields found, set an empty object so the user gets *something*
-            if let Ok(json) = serde_json::to_string_pretty(&Value::Object(obj)) {
-                method.sample_request = Some(json);
-                stub_count += 1;
-            }
-        }
-    }
-
-    if stub_count > 0 {
-        warnings.push(format!(
-            "{} method(s) used regex-based stub samples (less accurate than protoc-generated ones)",
-            stub_count
-        ));
-    }
-}
-
-/// Convert snake_case to camelCase
-fn to_camel_case(s: &str) -> String {
-    let mut result = String::new();
-    let mut capitalize_next = false;
-    for ch in s.chars() {
-        if ch == '_' {
-            capitalize_next = true;
-        } else if capitalize_next {
-            result.extend(ch.to_uppercase());
-            capitalize_next = false;
-        } else {
-            result.push(ch);
-        }
-    }
-    result
-}
-
 fn enrich_with_samples(
     services: &mut [Service],
     descriptor_pool: &DescriptorPool,
     warnings: &mut Vec<String>,
 ) {
-    // Debug: log all available messages in the pool
     let all_message_names: Vec<String> = descriptor_pool
         .all_messages()
         .map(|m| m.full_name().to_string())
         .collect();
-    
-    // Debug: log all available enums in the pool
-    let all_enum_names: Vec<String> = descriptor_pool
-        .all_enums()
-        .map(|e| e.full_name().to_string())
-        .collect();
-    
-    eprintln!("[proto_parser] Available messages: {:?}", all_message_names);
-    eprintln!("[proto_parser] Available enums: {:?}", all_enum_names);
-    
+
     if all_message_names.is_empty() {
         warnings.push("No message types found in descriptor pool".to_string());
     }
@@ -692,10 +549,8 @@ fn enrich_with_samples(
 
             let Some(message_desc) = descriptor else {
                 warnings.push(format!(
-                    "Descriptor not found for '{}' (service package: {:?}). Available types: {:?}",
-                    method.input_type,
-                    service.package_name,
-                    all_message_names.iter().take(10).collect::<Vec<_>>()
+                    "Descriptor not found for '{}' (service package: {:?})",
+                    method.input_type, service.package_name,
                 ));
                 continue;
             };
@@ -919,59 +774,4 @@ mod tests {
         );
     }
 
-    #[test]
-    fn test_stub_fallback_generates_samples() {
-        // Test the regex-based stub fallback by using generate_stub_samples directly
-        // on services that have no sample_request yet
-        let proto_content = r#"
-syntax = "proto3";
-package test;
-
-service TestService {
-  rpc DoSomething (DoRequest) returns (DoResponse);
-}
-
-message DoRequest {
-  string name = 1;
-  int32 count = 2;
-  bool active = 3;
-}
-
-message DoResponse {
-  string result = 1;
-}
-"#;
-        let proto_files = vec![(
-            PathBuf::from("test.proto"),
-            proto_content.to_string(),
-        )];
-
-        let mut services = vec![Service {
-            name: "TestService".to_string(),
-            package_name: Some("test".to_string()),
-            methods: vec![Method {
-                name: "DoSomething".to_string(),
-                input_type: "DoRequest".to_string(),
-                output_type: "DoResponse".to_string(),
-                is_client_streaming: false,
-                is_server_streaming: false,
-                method_type: "unary".to_string(),
-                sample_request: None, // Simulate protoc failure
-            }],
-            source_proto: None,
-        }];
-
-        let mut warnings = Vec::new();
-        generate_stub_samples(&mut services, &proto_files, &mut warnings);
-
-        let sample = services[0].methods[0].sample_request.as_ref()
-            .expect("Stub should have generated a sample");
-        println!("Stub sample: {}", sample);
-
-        let parsed: Value = serde_json::from_str(sample).expect("Should be valid JSON");
-        let obj = parsed.as_object().expect("Should be an object");
-        assert!(obj.contains_key("name"), "Should contain 'name' field");
-        assert!(obj.contains_key("count"), "Should contain 'count' field");
-        assert!(obj.contains_key("active"), "Should contain 'active' field");
-    }
 }
