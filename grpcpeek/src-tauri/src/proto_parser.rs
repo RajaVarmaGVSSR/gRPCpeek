@@ -207,57 +207,58 @@ fn compile_with_protox(
     proto_files: &[(PathBuf, String)],
     import_paths: &[ImportPath],
 ) -> Result<DescriptorPool, String> {
-    // Build deduplicated include directories from configured import paths
     let mut seen = HashSet::new();
-    let mut include_dirs: Vec<PathBuf> = import_paths
-        .iter()
-        .filter_map(|p| {
-            let path = Path::new(&p.path);
-            if path.is_dir() {
-                Some(path.to_path_buf())
-            } else {
-                path.parent().map(|parent| parent.to_path_buf())
-            }
-        })
-        .filter(|p| seen.insert(p.clone()))
-        .collect();
+    let mut include_dirs: Vec<PathBuf> = Vec::new();
 
-    // Some projects store vendor protos in subdirectories (e.g. google/type/money.proto
-    // living under proto/parent/google/type/money.proto). Scan for any import statements
-    // that don't resolve under the current include dirs and add the missing parent dirs.
+    for p in import_paths {
+        let path = Path::new(&p.path);
+        if path.is_dir() {
+            if seen.insert(path.to_path_buf()) {
+                include_dirs.push(path.to_path_buf());
+            }
+        } else {
+            // When a single file is added the user may not know which ancestor is
+            // the correct include root. For example, adding google/type/money.proto
+            // requires the root containing "google/" — not just google/type/ itself.
+            // Add up to 4 ancestor levels so protox can find the file regardless of
+            // which level the user picked.
+            let mut cur = path.parent().map(|p| p.to_path_buf());
+            for _ in 0..4 {
+                match cur {
+                    None => break,
+                    Some(ref dir) if dir.as_os_str().is_empty() || dir == Path::new("/") => break,
+                    Some(ref dir) => {
+                        if seen.insert(dir.clone()) {
+                            include_dirs.push(dir.clone());
+                        }
+                        cur = dir.parent().map(|p| p.to_path_buf());
+                    }
+                }
+            }
+        }
+    }
+
+    // For imports that still can't be satisfied, scan the configured paths looking
+    // for a subdirectory whose parent would resolve the import.
     for extra in find_extra_include_dirs(proto_files, &include_dirs, import_paths) {
         if seen.insert(extra.clone()) {
             include_dirs.push(extra);
         }
     }
 
-    // Write all proto files to a temp directory using the in-memory content (already
-    // BOM-stripped). protox::compile reads from disk, so we must give it clean files.
-    let temp_dir = tempfile::TempDir::new()
-        .map_err(|e| format!("Failed to create temp directory: {}", e))?;
-
-    let mut service_files: Vec<String> = Vec::new();
-
-    for (path, content) in proto_files {
-        if let Some(rel) = relative_to_include_dir(path, &include_dirs) {
-            let dest = temp_dir.path().join(&rel);
-            if let Some(parent) = dest.parent() {
-                std::fs::create_dir_all(parent)
-                    .map_err(|e| format!("Failed to create temp directory structure: {}", e))?;
-            }
-            std::fs::write(&dest, content.as_bytes())
-                .map_err(|e| format!("Failed to write temp proto file: {}", e))?;
-            if has_service_definition(content) {
-                service_files.push(rel);
-            }
-        }
-    }
+    // Only pass service files as entry points; protox resolves all transitive imports
+    // by searching include_dirs itself.
+    let service_files: Vec<String> = proto_files
+        .iter()
+        .filter(|(_, content)| has_service_definition(content))
+        .filter_map(|(path, _)| relative_to_include_dir(path, &include_dirs))
+        .collect();
 
     if service_files.is_empty() {
         return Err("No proto files with service definitions found".to_string());
     }
 
-    let fds = protox::compile(&service_files, &[temp_dir.path()])
+    let fds = protox::compile(&service_files, &include_dirs)
         .map_err(|e| format!("Proto compilation failed: {:?}", e))?;
 
     let bytes = fds.encode_to_vec();
@@ -275,7 +276,6 @@ fn find_extra_include_dirs(
 ) -> Vec<PathBuf> {
     let import_re = Regex::new(r#"import\s+"([^"]+)";"#).expect("valid import regex");
 
-    // Collect all import statements from proto file contents
     let all_imports: HashSet<String> = proto_files
         .iter()
         .flat_map(|(_, content)| {
@@ -289,7 +289,6 @@ fn find_extra_include_dirs(
     let mut seen: HashSet<PathBuf> = include_dirs.iter().cloned().collect();
 
     for import_stmt in &all_imports {
-        // Already resolvable — nothing to do
         if include_dirs.iter().any(|d| d.join(import_stmt).exists()) {
             continue;
         }
@@ -297,7 +296,6 @@ fn find_extra_include_dirs(
             continue;
         }
 
-        // Find the first path component so we can search for a matching directory
         let first = match import_stmt.split('/').next() {
             Some(s) if !s.is_empty() => s,
             _ => continue,
@@ -305,13 +303,9 @@ fn find_extra_include_dirs(
 
         'outer: for ip in import_paths {
             let root = Path::new(&ip.path);
-            if !root.is_dir() {
-                continue;
-            }
-            for entry in WalkDir::new(root).max_depth(5).into_iter().filter_map(|e| e.ok()) {
-                if entry.file_type().is_dir()
-                    && entry.file_name().to_str() == Some(first)
-                {
+            let search_root = if root.is_dir() { root.to_path_buf() } else { continue };
+            for entry in WalkDir::new(&search_root).max_depth(5).into_iter().filter_map(|e| e.ok()) {
+                if entry.file_type().is_dir() && entry.file_name().to_str() == Some(first) {
                     if let Some(parent) = entry.path().parent() {
                         if parent.join(import_stmt).exists() && seen.insert(parent.to_path_buf()) {
                             extra.push(parent.to_path_buf());
@@ -325,6 +319,7 @@ fn find_extra_include_dirs(
 
     extra
 }
+
 
 fn discover_proto_files(import_paths: &[ImportPath], warnings: &mut Vec<String>) -> Vec<PathBuf> {
     let mut results = Vec::new();
