@@ -13,7 +13,7 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 TAURI_CONF="$ROOT/grpcpeek/src-tauri/tauri.conf.json"
 PKG_JSON="$ROOT/grpcpeek/frontend/package.json"
 
-CURRENT=$(grep -oP '"version":\s*"\K[^"]+' "$TAURI_CONF")
+CURRENT=$(sed -n 's/.*"version": "\([^"]*\)".*/\1/p' "$TAURI_CONF" | head -1)
 echo "Bumping $CURRENT → $NEW_VERSION"
 
 sed -i.bak "s/\"version\": \"$CURRENT\"/\"version\": \"$NEW_VERSION\"/" "$TAURI_CONF" && rm "$TAURI_CONF.bak"

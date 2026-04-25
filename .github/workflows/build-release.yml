@@ -23,7 +23,7 @@ jobs:
         id: version
         shell: bash
         run: |
-          VERSION=$(grep -oP '"version":\s*"\K[^"]+' grpcpeek/src-tauri/tauri.conf.json)
+          VERSION=$(sed -n 's/.*"version": "\([^"]*\)".*/\1/p' grpcpeek/src-tauri/tauri.conf.json | head -1)
           echo "version=$VERSION" >> $GITHUB_OUTPUT
 
       - name: Setup Node.js
@@ -109,7 +109,7 @@ jobs:
       - name: Read version
         id: version
         run: |
-          VERSION=$(grep -oP '"version":\s*"\K[^"]+' grpcpeek/src-tauri/tauri.conf.json)
+          VERSION=$(sed -n 's/.*"version": "\([^"]*\)".*/\1/p' grpcpeek/src-tauri/tauri.conf.json | head -1)
           echo "version=$VERSION" >> $GITHUB_OUTPUT
 
       - name: Download all artifacts
