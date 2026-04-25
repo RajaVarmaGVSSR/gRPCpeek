@@ -231,18 +231,33 @@ fn compile_with_protox(
         }
     }
 
-    // Only compile files that declare services; protox resolves transitive imports automatically
-    let service_files: Vec<String> = proto_files
-        .iter()
-        .filter(|(_, content)| has_service_definition(content))
-        .filter_map(|(path, _)| relative_to_include_dir(path, &include_dirs))
-        .collect();
+    // Write all proto files to a temp directory using the in-memory content (already
+    // BOM-stripped). protox::compile reads from disk, so we must give it clean files.
+    let temp_dir = tempfile::TempDir::new()
+        .map_err(|e| format!("Failed to create temp directory: {}", e))?;
+
+    let mut service_files: Vec<String> = Vec::new();
+
+    for (path, content) in proto_files {
+        if let Some(rel) = relative_to_include_dir(path, &include_dirs) {
+            let dest = temp_dir.path().join(&rel);
+            if let Some(parent) = dest.parent() {
+                std::fs::create_dir_all(parent)
+                    .map_err(|e| format!("Failed to create temp directory structure: {}", e))?;
+            }
+            std::fs::write(&dest, content.as_bytes())
+                .map_err(|e| format!("Failed to write temp proto file: {}", e))?;
+            if has_service_definition(content) {
+                service_files.push(rel);
+            }
+        }
+    }
 
     if service_files.is_empty() {
         return Err("No proto files with service definitions found".to_string());
     }
 
-    let fds = protox::compile(&service_files, &include_dirs)
+    let fds = protox::compile(&service_files, &[temp_dir.path()])
         .map_err(|e| format!("Proto compilation failed: {:?}", e))?;
 
     let bytes = fds.encode_to_vec();
