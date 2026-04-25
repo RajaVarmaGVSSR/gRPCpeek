@@ -3,10 +3,10 @@
   "version": "0.9.0",
   "identifier": "com.grpcpeek.app",
   "build": {
-    "beforeDevCommand": "npm run dev --prefix ../grpcpeek/frontend",
-    "beforeBuildCommand": "",
+    "beforeDevCommand": "npm run dev --prefix ../frontend",
+    "beforeBuildCommand": "npm run build --prefix ../frontend",
     "devUrl": "http://localhost:1420",
-    "frontendDist": "frontend/dist"
+    "frontendDist": "../frontend/dist"
   },
   "bundle": {
     "active": true,
