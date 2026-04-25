@@ -246,8 +246,22 @@ fn compile_with_protox(
         }
     }
 
-    // Only pass service files as entry points; protox resolves all transitive imports
-    // by searching include_dirs itself.
+    // Mirror each include directory into a temp copy with BOM stripped.
+    // protox reads directly from disk, so it would choke on files with a UTF-8 BOM
+    // (0xEF BB BF) at position 1:1.  We mirror the FULL tree — not just proto_files
+    // — because protox resolves transitive imports by searching these dirs itself.
+    // service_files are computed against the original include_dirs; the mirrored
+    // dirs have an identical structure so the same relative paths are valid.
+    let mut temp_dirs: Vec<tempfile::TempDir> = Vec::new();
+    let mut temp_include_dirs: Vec<PathBuf> = Vec::new();
+    for include_dir in &include_dirs {
+        let temp = tempfile::TempDir::new()
+            .map_err(|e| format!("Failed to create temp directory: {}", e))?;
+        mirror_dir_to_temp(include_dir, temp.path())?;
+        temp_include_dirs.push(temp.path().to_path_buf());
+        temp_dirs.push(temp);
+    }
+
     let service_files: Vec<String> = proto_files
         .iter()
         .filter(|(_, content)| has_service_definition(content))
@@ -258,12 +272,41 @@ fn compile_with_protox(
         return Err("No proto files with service definitions found".to_string());
     }
 
-    let fds = protox::compile(&service_files, &include_dirs)
+    let fds = protox::compile(&service_files, &temp_include_dirs)
         .map_err(|e| format!("Proto compilation failed: {:?}", e))?;
 
+    drop(temp_dirs); // keep alive until protox finishes
     let bytes = fds.encode_to_vec();
     DescriptorPool::decode(bytes.as_slice())
         .map_err(|e| format!("Failed to decode descriptor pool: {}", e))
+}
+
+/// Copy every `.proto` file under `src_dir` into `dest_dir`, preserving the
+/// subdirectory structure and stripping any UTF-8 BOM in the process.
+fn mirror_dir_to_temp(src_dir: &Path, dest_dir: &Path) -> Result<(), String> {
+    if !src_dir.is_dir() {
+        return Ok(());
+    }
+    for entry in WalkDir::new(src_dir).into_iter().filter_map(|e| e.ok()) {
+        if !entry.file_type().is_file() || !is_proto_file(entry.path()) {
+            continue;
+        }
+        let rel = match entry.path().strip_prefix(src_dir) {
+            Ok(r) => r,
+            Err(_) => continue,
+        };
+        let dest = dest_dir.join(rel);
+        if let Some(parent) = dest.parent() {
+            std::fs::create_dir_all(parent)
+                .map_err(|e| format!("Failed to create temp directory: {}", e))?;
+        }
+        if let Ok(content) = fs::read_to_string(entry.path()) {
+            let cleaned = content.trim_start_matches('\u{FEFF}');
+            std::fs::write(&dest, cleaned.as_bytes())
+                .map_err(|e| format!("Failed to write temp proto file: {}", e))?;
+        }
+    }
+    Ok(())
 }
 
 /// For each import statement that cannot be satisfied by any of `include_dirs`,
