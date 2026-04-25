@@ -31,7 +31,6 @@ export function ImportPathManager({
     try {
       setIsAdding(true)
       setError(null)
-      console.log('Opening file picker...')
       const selected = await open({
         title: 'Select Proto File',
         multiple: false,
@@ -43,8 +42,6 @@ export function ImportPathManager({
           },
         ],
       })
-
-      console.log('Selected file:', selected)
 
       if (selected) {
         // Notify parent to add the path - parent state update will trigger re-render
@@ -62,14 +59,11 @@ export function ImportPathManager({
     try {
       setIsAdding(true)
       setError(null)
-      console.log('Opening directory picker...')
       const selected = await open({
         title: 'Select Directory',
         multiple: false,
         directory: true,
       })
-
-      console.log('Selected directory:', selected)
 
       if (selected) {
         // Notify parent to add the path - parent state update will trigger re-render

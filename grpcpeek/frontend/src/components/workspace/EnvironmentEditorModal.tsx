@@ -126,7 +126,6 @@ export function EnvironmentEditorModal({
       tls: { ...tls },
     }
 
-    console.log('EnvironmentEditorModal - Saving updates:', updates)
     onSave(updates)
     onClose()
   }

@@ -6,59 +6,99 @@ import type { VariableContext, VariableResolutionResult, UnresolvedVariable } fr
 // Regex to match {{env.key}} or {{global.key}}
 const VARIABLE_PATTERN = /\{\{(env|global)\.([a-zA-Z0-9_]+)\}\}/g
 
+function lookupVariable(
+  namespace: string,
+  key: string,
+  context: VariableContext
+): string | undefined {
+  if (namespace === 'env') {
+    return context.environmentVariables.find((v) => v.key === key && v.enabled)?.value
+  }
+  if (namespace === 'global') {
+    return context.globalVariables.find((v) => v.key === key && v.enabled)?.value
+  }
+  return undefined
+}
+
 /**
- * Resolves all variables in a string
- * @param text - String potentially containing {{env.key}} or {{global.key}}
- * @param context - Variable context (environment + global variables)
- * @returns Resolution result with resolved string and list of unresolved vars
+ * Resolves variables within a plain string (no JSON awareness).
+ * Used for metadata values and non-JSON contexts.
+ */
+function resolveInString(
+  text: string,
+  context: VariableContext,
+  unresolvedVars: UnresolvedVariable[]
+): string {
+  return text.replace(VARIABLE_PATTERN, (placeholder, namespace, key) => {
+    const value = lookupVariable(namespace, key, context)
+    if (value !== undefined) {
+      return value
+    }
+    if (!unresolvedVars.some((v) => v.placeholder === placeholder)) {
+      unresolvedVars.push({ placeholder, key, namespace: namespace as 'env' | 'global' })
+    }
+    return placeholder
+  })
+}
+
+/**
+ * Recursively substitutes variables inside a parsed JSON value.
+ * String values get variable substitution; the result is left as a plain
+ * string value, so special characters in variable values are safe —
+ * they will be re-encoded by JSON.stringify rather than breaking the structure.
+ */
+function resolveInJsonValue(
+  value: unknown,
+  context: VariableContext,
+  unresolvedVars: UnresolvedVariable[]
+): unknown {
+  if (typeof value === 'string') {
+    return resolveInString(value, context, unresolvedVars)
+  }
+  if (Array.isArray(value)) {
+    return value.map((item) => resolveInJsonValue(item, context, unresolvedVars))
+  }
+  if (value !== null && typeof value === 'object') {
+    const out: Record<string, unknown> = {}
+    for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
+      out[k] = resolveInJsonValue(v, context, unresolvedVars)
+    }
+    return out
+  }
+  return value
+}
+
+/**
+ * Resolves all variables in a string.
+ *
+ * When the input is valid JSON, substitution happens at the value level so
+ * special characters in variable values (quotes, backslashes, etc.) cannot
+ * corrupt the JSON structure. For non-JSON input, plain string replacement
+ * is used as a fallback.
  */
 export function resolveVariables(
   text: string,
   context: VariableContext
 ): VariableResolutionResult {
   const unresolvedVars: UnresolvedVariable[] = []
-  let resolved = text
 
-  // Find all variable placeholders
-  const matches = text.matchAll(VARIABLE_PATTERN)
-
-  for (const match of matches) {
-    const [placeholder, namespace, key] = match
-    const isEnv = namespace === 'env'
-    const isGlobal = namespace === 'global'
-
-    // Look up variable value
-    let value: string | undefined
-
-    if (isEnv) {
-      const envVar = context.environmentVariables.find(
-        (v) => v.key === key && v.enabled
-      )
-      value = envVar?.value
-    } else if (isGlobal) {
-      const globalVar = context.globalVariables.find(
-        (v) => v.key === key && v.enabled
-      )
-      value = globalVar?.value
-    }
-
-    if (value !== undefined) {
-      // Replace this occurrence
-      resolved = resolved.replace(placeholder, value)
-    } else {
-      // Track unresolved variable
-      if (!unresolvedVars.some((v) => v.placeholder === placeholder)) {
-        unresolvedVars.push({
-          placeholder,
-          key,
-          namespace: namespace as 'env' | 'global',
-        })
+  // JSON-aware path: parse → substitute in values → re-serialize.
+  // This prevents variable values that contain " or \ from breaking JSON.
+  try {
+    const parsed = JSON.parse(text)
+    if (typeof parsed === 'object' && parsed !== null) {
+      const resolved = resolveInJsonValue(parsed, context, unresolvedVars)
+      return {
+        resolved: JSON.stringify(resolved, null, 2),
+        unresolvedVars,
       }
     }
+  } catch {
+    // Not valid JSON — fall through to plain string substitution.
   }
 
   return {
-    resolved,
+    resolved: resolveInString(text, context, unresolvedVars),
     unresolvedVars,
   }
 }

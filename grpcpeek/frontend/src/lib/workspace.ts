@@ -108,9 +108,7 @@ export function saveWorkspace(workspace: Workspace): void {
     workspaces.push(workspace)
   }
   
-  console.log('workspace.ts - saveWorkspace - Saving to localStorage:', workspace)
   localStorage.setItem(STORAGE_KEY, JSON.stringify(workspaces))
-  console.log('workspace.ts - saveWorkspace - Saved successfully')
 }
 
 export function deleteWorkspace(id: string): void {
@@ -194,7 +192,6 @@ export function updateEnvironment(
   environmentId: string,
   updates: Partial<Environment>
 ): Workspace {
-  console.log('workspace.ts - updateEnvironment called:', { environmentId, updates })
   const result = {
     ...workspace,
     environments: workspace.environments.map((env) =>
@@ -216,7 +213,6 @@ export function updateEnvironment(
     ),
     updatedAt: new Date().toISOString(),
   }
-  console.log('workspace.ts - updateEnvironment result:', result)
   return result
 }
 

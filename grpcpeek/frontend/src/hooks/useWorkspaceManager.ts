@@ -159,25 +159,19 @@ export function useWorkspaceManager(): UseWorkspaceManagerReturn {
     auth?: AuthConfig
     tls?: TlsConfig
   }) => {
-    console.log('useWorkspaceManager - createEnvironmentEntry called with:', config)
     const environment = createEnvironmentEntity(config.name, config.host, config.port)
     environment.variables = config.variables ? config.variables.map((variable) => ({ ...variable })) : []
     environment.metadata = { ...(config.metadata || {}) }
     environment.auth = config.auth ? { ...config.auth } : { type: 'none' }
     environment.tls = config.tls ? { ...config.tls } : { enabled: false }
-    console.log('useWorkspaceManager - Created environment entity:', environment)
 
     const updated = addEnvironment(workspace, environment)
-    console.log('useWorkspaceManager - After addEnvironment:', updated)
     syncWorkspaceState(updated)
-    console.log('useWorkspaceManager - After syncWorkspaceState, returning ID:', environment.id)
     return environment.id
   }, [workspace, syncWorkspaceState])
 
   const updateEnvironmentEntry = useCallback((environmentId: string, updates: Partial<Environment>) => {
-    console.log('useWorkspaceManager - updateEnvironmentEntry called with:', { environmentId, updates })
     const updated = updateEnvironment(workspace, environmentId, updates)
-    console.log('useWorkspaceManager - Updated workspace:', updated)
     syncWorkspaceState(updated)
   }, [workspace, syncWorkspaceState])
 
@@ -208,7 +202,6 @@ export function useWorkspaceManager(): UseWorkspaceManagerReturn {
     // Get the latest workspace from storage to avoid overwriting recent changes
     const latestWorkspace = getWorkspaceById(workspace.id) || workspace
     const updatedWorkspace = { ...latestWorkspace, ...updates, updatedAt: new Date().toISOString() }
-    console.log('useWorkspaceManager - updateWorkspace:', { latestWorkspace, updates, updatedWorkspace })
     saveWorkspace(updatedWorkspace)
     setWorkspace(updatedWorkspace)
     

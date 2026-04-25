@@ -71,7 +71,6 @@ export function useRequestManager(
 
   // Initialize state from workspace on mount and when workspace changes
   useEffect(() => {
-    console.log('useRequestManager - Initializing from workspace:', workspace.id)
     setServices(workspace.services || [])
     setTabs(workspace.openTabs || [])
     setActiveTabId(workspace.activeTabId !== undefined ? workspace.activeTabId : null)
@@ -82,7 +81,6 @@ export function useRequestManager(
   // Persist services to workspace whenever they change
   useEffect(() => {
     if (services.length > 0 || workspace.services?.length) {
-      console.log('useRequestManager - Persisting services to workspace:', services.length)
       const updatedWorkspace = saveServicesToWorkspace(workspace, services)
       saveWorkspace(updatedWorkspace)
       setWorkspace(updatedWorkspace)
@@ -92,7 +90,6 @@ export function useRequestManager(
   // Persist tabs and activeTabId to workspace whenever they change
   useEffect(() => {
     if (tabs.length > 0 || workspace.openTabs?.length || activeTabId !== workspace.activeTabId) {
-      console.log('useRequestManager - Persisting tabs to workspace:', tabs.length, 'activeTabId:', activeTabId)
       const updatedWorkspace = saveTabsToWorkspace(workspace, tabs, activeTabId)
       saveWorkspace(updatedWorkspace)
       setWorkspace(updatedWorkspace)
@@ -101,59 +98,55 @@ export function useRequestManager(
 
   // Listen for streaming messages from backend
   useEffect(() => {
-    console.log('[STREAMING] Setting up event listener for grpc-stream-message')
-    let unlistenFn: (() => void) | null = null
     let isMounted = true
-    
-    listen<{ tabId: string; index: number; data: any; timestamp: string }>(
-      'grpc-stream-message',
-      (event) => {
-        if (!isMounted) return // Ignore events if component unmounted
-        
-        const { tabId, index, data, timestamp } = event.payload
-        console.log(`[STREAMING] Received message ${index} for tab ${tabId}`, data)
-        
-        // Use flushSync to force immediate DOM update for real-time streaming
-        flushSync(() => {
-          setTabs((prevTabs) =>
-            prevTabs.map((tab) => {
-              if (tab.id === tabId) {
-                const newMessage: StreamMessage = {
-                  id: `${tabId}-${index}`,
-                  timestamp,
-                  data,
-                  index,
-                }
-                console.log(`[STREAMING] Adding message to tab, total messages: ${tab.streamingMessages.length + 1}`)
-                return {
-                  ...tab,
-                  streamingMessages: [...tab.streamingMessages, newMessage],
-                }
-              }
-              return tab
+    let unlistenFn: (() => void) | null = null
+
+    const setup = async () => {
+      try {
+        const unlisten = await listen<{ tabId: string; index: number; data: any; timestamp: string }>(
+          'grpc-stream-message',
+          (event) => {
+            if (!isMounted) return
+
+            const { tabId, index, data, timestamp } = event.payload
+
+            flushSync(() => {
+              setTabs((prevTabs) =>
+                prevTabs.map((tab) => {
+                  if (tab.id === tabId) {
+                    const newMessage: StreamMessage = {
+                      id: `${tabId}-${index}`,
+                      timestamp,
+                      data,
+                      index,
+                    }
+                    return {
+                      ...tab,
+                      streamingMessages: [...tab.streamingMessages, newMessage],
+                    }
+                  }
+                  return tab
+                })
+              )
             })
-          )
-        })
+          }
+        )
+        // If the effect was cleaned up before listen() resolved, unlisten immediately.
+        if (isMounted) {
+          unlistenFn = unlisten
+        } else {
+          unlisten()
+        }
+      } catch (error) {
+        console.error('[STREAMING] Failed to register event listener:', error)
       }
-    ).then((unlisten) => {
-      if (isMounted) {
-        unlistenFn = unlisten
-        console.log('[STREAMING] Event listener registered successfully')
-      } else {
-        // Component unmounted before listener was registered, clean it up immediately
-        unlisten()
-        console.log('[STREAMING] Event listener registered but immediately cleaned up (component unmounted)')
-      }
-    }).catch((error) => {
-      console.error('[STREAMING] Failed to register event listener:', error)
-    })
+    }
+
+    setup()
 
     return () => {
       isMounted = false
-      if (unlistenFn) {
-        unlistenFn()
-        console.log('[STREAMING] Event listener cleaned up')
-      }
+      unlistenFn?.()
     }
   }, [])
 
@@ -948,14 +941,10 @@ export function useRequestManager(
   const handleSendStreamMessage = useCallback(async (messageId: string) => {
     if (!activeTab) return
 
-    console.log('Sending stream message:', messageId)
-    
-    // Find the message
     const messages = activeTab.clientStreamingMessages || []
     const message = messages.find(m => m.id === messageId)
-    
+
     if (!message || message.sent) {
-      console.warn('Message not found or already sent:', messageId)
       return
     }
 
@@ -1008,8 +997,6 @@ export function useRequestManager(
 
   const handleFinishStreaming = useCallback(async () => {
     if (!activeTab) return
-
-    console.log('Finishing stream for tab:', activeTab.id)
 
     try {
       updateActiveTab({ isLoading: true })

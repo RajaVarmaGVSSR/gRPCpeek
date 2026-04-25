@@ -5,6 +5,7 @@ import { ModalProvider } from './contexts/ModalContext'
 import { ToastProvider } from './contexts/ToastContext'
 import { ToastContainer } from './components/ui/Toast'
 import { ModalRenderer } from './components/ModalRenderer'
+import { ErrorBoundary } from './components/ErrorBoundary'
 
 // ============================================================================
 // Tauri App Security & Native Feel Enhancements
@@ -41,11 +42,13 @@ document.addEventListener('keydown', (e) => {
 // ============================================================================
 
 ReactDOM.createRoot(document.getElementById('root')!).render(
-  <ModalProvider>
-    <ToastProvider>
-      <App />
-      <ToastContainer />
-      <ModalRenderer />
-    </ToastProvider>
-  </ModalProvider>,
+  <ErrorBoundary>
+    <ModalProvider>
+      <ToastProvider>
+        <App />
+        <ToastContainer />
+        <ModalRenderer />
+      </ToastProvider>
+    </ModalProvider>
+  </ErrorBoundary>,
 )

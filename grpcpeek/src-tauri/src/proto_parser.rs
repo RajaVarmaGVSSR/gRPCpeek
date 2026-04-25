@@ -158,11 +158,24 @@ pub fn compile_descriptor_pool(import_paths: &[ImportPath]) -> Result<Descriptor
 
 /// Compile a descriptor pool from raw proto file content (single-file legacy path).
 pub fn compile_single_file(proto_content: &str) -> Result<DescriptorPool, String> {
+    const MAX_PROTO_BYTES: usize = 5 * 1024 * 1024; // 5 MB
+    if proto_content.len() > MAX_PROTO_BYTES {
+        return Err(format!(
+            "Proto content too large ({} bytes). Maximum allowed is {} bytes.",
+            proto_content.len(),
+            MAX_PROTO_BYTES
+        ));
+    }
+
     let mut temp_file = NamedTempFile::with_suffix(".proto")
         .map_err(|e| format!("Failed to create temp proto file: {}", e))?;
     temp_file
         .write_all(proto_content.as_bytes())
         .map_err(|e| format!("Failed to write proto content: {}", e))?;
+    // Flush ensures the kernel write buffer is flushed before protox reads the file.
+    temp_file
+        .flush()
+        .map_err(|e| format!("Failed to flush proto content: {}", e))?;
 
     let proto_path = temp_file.path().to_path_buf();
     let proto_dir = proto_path
@@ -324,7 +337,7 @@ fn discover_proto_files(import_paths: &[ImportPath], warnings: &mut Vec<String>)
         }
 
         let mut found_any = false;
-        for entry in WalkDir::new(candidate).into_iter().filter_map(|e| e.ok()) {
+        for entry in WalkDir::new(candidate).max_depth(20).into_iter().filter_map(|e| e.ok()) {
             if entry.file_type().is_file() && is_proto_file(entry.path()) {
                 found_any = true;
                 let p = entry.path().to_path_buf();

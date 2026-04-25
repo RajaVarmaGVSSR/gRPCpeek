@@ -103,11 +103,10 @@ export function WorkspaceSettingsModal({
   const handleClose = async () => {
     // Auto-reparse if import paths changed during this session
     if (importPathsChanged.current && onReparse) {
-      console.log('Import paths changed during session, triggering auto-reparse on close...')
       try {
         await onReparse()
-      } catch (error) {
-        console.error('Auto-reparse on close failed:', error)
+      } catch {
+        // reparse errors are surfaced via toast in the handler
       }
     }
     onClose()
@@ -118,11 +117,10 @@ export function WorkspaceSettingsModal({
     
     // Auto-reparse if import paths changed
     if (importPathsChanged.current && onReparse) {
-      console.log('Import paths changed, triggering auto-reparse...')
       try {
         await onReparse()
-      } catch (error) {
-        console.error('Auto-reparse failed:', error)
+      } catch {
+        // reparse errors are surfaced via toast in the handler
       }
     }
     
@@ -523,7 +521,6 @@ export function WorkspaceSettingsModal({
           mode="create"
           onClose={() => setIsCreatingNewEnvironment(false)}
           onSave={(config) => {
-            console.log('WorkspaceSettingsModal - Creating environment with config:', config)
             onEnvironmentCreate({
               name: config.name || 'New Environment',
               host: config.host || 'localhost',

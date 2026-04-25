@@ -15,8 +15,6 @@
   Open-source desktop gRPC client — import protos, send requests, inspect responses, organize your workspace.
 </p>
 
-![gRPCpeek app overview](docs/screenshots/app-overview.svg)
-
 ## Why gRPCpeek?
 
 Most gRPC tooling is either too heavy, too terminal-centric, or too narrow for everyday API work. gRPCpeek focuses on a clean desktop workflow:
@@ -31,15 +29,13 @@ Most gRPC tooling is either too heavy, too terminal-centric, or too narrow for e
 
 ## Screenshots
 
-Replace the placeholder files in [docs/screenshots](docs/screenshots/README.md) with real captures before publishing a release announcement.
-
-| Workspace and request editor | Response inspector |
+| Request editor and response inspector | Workspace settings |
 | --- | --- |
-| ![Workspace and request editor](docs/screenshots/workspace-request-editor.svg) | ![Response inspector](docs/screenshots/response-inspector.svg) |
+| ![Request editor and response inspector](docs/screenshots/home.png) | ![Workspace settings](docs/screenshots/workspace-settings.png) |
 
-| Environments and variables | Streaming workflow |
+| Environment configuration | Auth and request history |
 | --- | --- |
-| ![Environments and variables](docs/screenshots/environments-variables.svg) | ![Streaming workflow](docs/screenshots/streaming-workflow.svg) |
+| ![Environment configuration](docs/screenshots/environments.png) | ![Auth configuration and request history](docs/screenshots/auth-history.png) |
 
 ## Features
 
@@ -193,7 +189,7 @@ For TLS and mTLS testing, see [test-server/certs](test-server/certs/README.md).
 │   └── src-tauri/       # Tauri 2 and Rust backend
 ├── test-server/         # Local gRPC server for manual testing
 ├── docs/
-│   └── screenshots/     # Screenshot placeholders for README assets
+│   └── screenshots/     # README screenshot assets
 ├── LICENSE
 └── README.md
 ```

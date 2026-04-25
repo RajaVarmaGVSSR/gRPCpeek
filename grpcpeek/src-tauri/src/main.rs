@@ -20,6 +20,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
 use std::io::BufReader;
+use std::path::PathBuf;
 use std::process::Command;
 use std::sync::{Arc, Mutex};
 use tauri::Emitter;
@@ -49,7 +50,7 @@ impl AppState {
     ) -> Result<Arc<DescriptorPool>, String> {
         let key = cache_key(import_paths);
         {
-            let guard = self.pool.lock().unwrap();
+            let guard = self.pool.lock().unwrap_or_else(|p| p.into_inner());
             if let Some((k, p)) = guard.as_ref() {
                 if k == &key {
                     return Ok(Arc::clone(p));
@@ -57,14 +58,26 @@ impl AppState {
             }
         }
         let pool = Arc::new(proto_parser::compile_descriptor_pool(import_paths)?);
-        *self.pool.lock().unwrap() = Some((key, Arc::clone(&pool)));
+        *self.pool.lock().unwrap_or_else(|p| p.into_inner()) = Some((key, Arc::clone(&pool)));
         Ok(pool)
     }
 
     fn store(&self, import_paths: &[proto_parser::ImportPath], pool: DescriptorPool) {
         let key = cache_key(import_paths);
-        *self.pool.lock().unwrap() = Some((key, Arc::new(pool)));
+        *self.pool.lock().unwrap_or_else(|p| p.into_inner()) = Some((key, Arc::new(pool)));
     }
+}
+
+fn validate_metadata(meta: &HashMap<String, String>) -> Result<(), String> {
+    for (k, v) in meta {
+        if k.chars().any(|c| c.is_control()) {
+            return Err(format!("Invalid metadata key '{}': contains control characters", k));
+        }
+        if v.chars().any(|c| c == '\n' || c == '\r' || c == '\0') {
+            return Err(format!("Invalid metadata value for '{}': contains newline or null characters", k));
+        }
+    }
+    Ok(())
 }
 
 fn cache_key(paths: &[proto_parser::ImportPath]) -> String {
@@ -497,6 +510,7 @@ async fn call_grpc_method(
         req_builder = apply_auth(req_builder, a);
     }
     if let Some(ref meta) = metadata {
+        validate_metadata(meta)?;
         for (k, v) in meta {
             req_builder = req_builder.header(k.as_str(), v.as_str());
         }
@@ -694,6 +708,7 @@ async fn start_client_stream(
                 req_builder = apply_auth(req_builder, a);
             }
             if let Some(ref meta) = metadata_c {
+                validate_metadata(meta)?;
                 for (k, v) in meta {
                     req_builder = req_builder.header(k.as_str(), v.as_str());
                 }
@@ -783,7 +798,7 @@ async fn start_client_stream(
         let _ = response_tx.send(result);
     });
 
-    ACTIVE_CLIENT_STREAMS.lock().unwrap().insert(
+    ACTIVE_CLIENT_STREAMS.lock().unwrap_or_else(|p| p.into_inner()).insert(
         tab_id.clone(),
         ActiveClientStream {
             sender: message_tx,
@@ -802,7 +817,7 @@ async fn send_stream_message(
     body: String,
 ) -> Result<String, String> {
     let (sender, input_desc) = {
-        let streams = ACTIVE_CLIENT_STREAMS.lock().unwrap();
+        let streams = ACTIVE_CLIENT_STREAMS.lock().unwrap_or_else(|p| p.into_inner());
         let s = streams
             .get(&tab_id)
             .ok_or("Stream not found. Start the stream first.")?;
@@ -822,7 +837,7 @@ async fn send_stream_message(
 #[tauri::command]
 async fn finish_streaming(tab_id: String) -> Result<String, String> {
     let response_receiver = {
-        let mut streams = ACTIVE_CLIENT_STREAMS.lock().unwrap();
+        let mut streams = ACTIVE_CLIENT_STREAMS.lock().unwrap_or_else(|p| p.into_inner());
         let s = streams
             .remove(&tab_id)
             .ok_or("Stream not found. Start the stream first.")?;
@@ -869,8 +884,26 @@ fn open_response_in_temp_file(file_name: String, contents: String) -> Result<Str
 
 #[tauri::command]
 fn save_response_to_file(path: String, contents: String) -> Result<(), String> {
-    std::fs::write(&path, contents)
-        .map_err(|e| format!("Failed to save file '{}': {}", path, e))
+    let dest: PathBuf = PathBuf::from(&path);
+
+    // Resolve symlinks and ".." so the check can't be fooled by path traversal tricks.
+    // Canonicalize requires the parent directory to exist (the file itself may not yet).
+    let resolved = if dest.exists() {
+        dest.canonicalize()
+    } else {
+        dest.parent()
+            .ok_or("Invalid path")?
+            .canonicalize()
+    }
+    .map_err(|e| format!("Cannot resolve path: {}", e))?;
+
+    let home = dirs::home_dir().ok_or("Could not determine home directory")?;
+    if !resolved.starts_with(&home) {
+        return Err("Save path must be within your home directory".to_string());
+    }
+
+    std::fs::write(&dest, contents)
+        .map_err(|e| format!("Failed to save file: {}", e))
 }
 
 // ---------------------------------------------------------------------------
