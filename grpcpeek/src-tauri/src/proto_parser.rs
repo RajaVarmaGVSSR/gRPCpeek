@@ -480,29 +480,52 @@ fn has_service_definition(content: &str) -> bool {
 
 /// Return the path of `file` relative to one of the `roots`, normalising path
 /// separators so the result can be passed to protox as a file name.
+///
+/// Uses the MOST SPECIFIC (longest) matching root so that when a parent directory
+/// and a subdirectory are both in the list, the subdirectory wins. This ensures
+/// proto files like `google/type/money.proto` are written at the correct relative
+/// path in the temp dir rather than `proto/google/type/money.proto`.
 fn relative_to_include_dir(file: &Path, roots: &[PathBuf]) -> Option<String> {
+    let mut best: Option<String> = None;
+    let mut best_root_len: usize = 0;
+
+    // Path-based check: correct on all platforms, handles symlinks on the same mount
+    for root in roots {
+        if let Ok(rel) = file.strip_prefix(root) {
+            let s = rel.to_string_lossy().replace('\\', "/");
+            if !s.is_empty() {
+                let len = root.as_os_str().len();
+                if len > best_root_len {
+                    best_root_len = len;
+                    best = Some(s);
+                }
+            }
+        }
+    }
+
+    if best.is_some() {
+        return best;
+    }
+
+    // String-based fallback for Windows UNC paths (\\?\) where Path::strip_prefix
+    // may not normalise the prefix away.
     let file_str = file.to_string_lossy();
     let file_norm = file_str.trim_start_matches(r"\\?\");
+    let mut best_str_len: usize = 0;
 
     for root in roots {
         let root_str = root.to_string_lossy();
         let root_norm = root_str.trim_start_matches(r"\\?\");
-
         if let Some(rel) = file_norm.strip_prefix(root_norm) {
-            let trimmed = rel.trim_start_matches(['/', '\\']);
-            if !trimmed.is_empty() {
-                return Some(trimmed.replace('\\', "/"));
-            }
-        }
-
-        if let Ok(rel) = file.strip_prefix(root) {
-            let s = rel.to_string_lossy();
-            if !s.is_empty() {
-                return Some(s.replace('\\', "/"));
+            let trimmed = rel.trim_start_matches(['/', '\\']).replace('\\', "/");
+            if !trimmed.is_empty() && root_norm.len() > best_str_len {
+                best_str_len = root_norm.len();
+                best = Some(trimmed);
             }
         }
     }
-    None
+
+    best
 }
 
 fn enrich_with_samples(
