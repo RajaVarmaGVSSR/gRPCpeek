@@ -189,7 +189,7 @@ pub fn compile_single_file(proto_content: &str) -> Result<DescriptorPool, String
 
     // temp_file must stay alive until protox finishes reading it
     let fds = protox::compile(vec![file_name.as_str()], vec![proto_dir])
-        .map_err(|e| format!("Proto compilation failed: {}", e))?;
+        .map_err(|e| format!("Proto compilation failed: {:?}", e))?;
 
     drop(temp_file);
 
@@ -242,7 +242,7 @@ fn compile_with_protox(
     }
 
     let fds = protox::compile(&service_files, &include_dirs)
-        .map_err(|e| format!("Proto compilation failed: {}", e))?;
+        .map_err(|e| format!("Proto compilation failed: {:?}", e))?;
 
     let bytes = fds.encode_to_vec();
     DescriptorPool::decode(bytes.as_slice())
