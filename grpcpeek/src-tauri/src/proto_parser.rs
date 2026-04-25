@@ -158,6 +158,7 @@ pub fn compile_descriptor_pool(import_paths: &[ImportPath]) -> Result<Descriptor
 
 /// Compile a descriptor pool from raw proto file content (single-file legacy path).
 pub fn compile_single_file(proto_content: &str) -> Result<DescriptorPool, String> {
+    let proto_content = proto_content.trim_start_matches('\u{FEFF}');
     const MAX_PROTO_BYTES: usize = 5 * 1024 * 1024; // 5 MB
     if proto_content.len() > MAX_PROTO_BYTES {
         return Err(format!(
@@ -370,7 +371,10 @@ fn read_proto_files(
     let mut result = Vec::new();
     for path in paths {
         match fs::read_to_string(path) {
-            Ok(content) => result.push((path.clone(), content)),
+            Ok(content) => {
+                    let content = content.trim_start_matches('\u{FEFF}').to_string();
+                    result.push((path.clone(), content));
+                }
             Err(err) => errors.push(ProtoParseError {
                 file: path.to_string_lossy().to_string(),
                 message: format!("Failed to read proto file: {}", err),
