@@ -201,7 +201,7 @@ export function SettingsModal({
               <div className="flex items-center gap-2">
                 <h4 className="font-semibold">gRPCpeek</h4>
                 <span className="rounded bg-primary/10 px-2 py-0.5 text-xs font-medium text-primary">
-                  v0.1.0
+                  v{__APP_VERSION__}
                 </span>
               </div>
               <p className="text-xs text-muted-foreground">

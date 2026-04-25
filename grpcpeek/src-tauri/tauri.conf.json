@@ -1,6 +1,6 @@
 {
   "productName": "gRPCpeek",
-  "version": "0.1.10",
+  "version": "1.0.0",
   "identifier": "com.grpcpeek.app",
   "build": {
     "beforeDevCommand": "npm run dev --prefix ../grpcpeek/frontend",

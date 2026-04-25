@@ -3,68 +3,28 @@ name: Build Release
 on:
   push:
     tags:
-      - 'v*' # Triggers on version tags like v1.0.0
-    branches:
-      - 'release/**' # Triggers on release branches like release/0.1.0
-  workflow_dispatch: # Allows manual trigger from GitHub UI
+      - 'v*'
+  workflow_dispatch:
 
 jobs:
-  bump-version:
-    runs-on: ubuntu-latest
-    outputs:
-      new_version: ${{ steps.bump.outputs.new_version }}
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-          token: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Auto-increment patch version
-        id: bump
-        run: |
-          # Read current version from tauri.conf.json
-          CURRENT_VERSION=$(grep -oP '"version":\s*"\K[^"]+' grpcpeek/src-tauri/tauri.conf.json)
-          echo "Current version: $CURRENT_VERSION"
-          
-          # Split version into major.minor.patch
-          IFS='.' read -r MAJOR MINOR PATCH <<< "$CURRENT_VERSION"
-          
-          # Increment patch version
-          NEW_PATCH=$((PATCH + 1))
-          NEW_VERSION="${MAJOR}.${MINOR}.${NEW_PATCH}"
-          echo "New version: $NEW_VERSION"
-          
-          # Update tauri.conf.json
-          sed -i "s/\"version\": \"$CURRENT_VERSION\"/\"version\": \"$NEW_VERSION\"/" grpcpeek/src-tauri/tauri.conf.json
-          
-          # Update package.json
-          sed -i "s/\"version\": \"$CURRENT_VERSION\"/\"version\": \"$NEW_VERSION\"/" grpcpeek/frontend/package.json
-          
-          # Commit the version bump
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add grpcpeek/src-tauri/tauri.conf.json grpcpeek/frontend/package.json
-          git commit -m "chore: auto-bump version to $NEW_VERSION [skip ci]"
-          git push
-          
-          # Output for next job
-          echo "new_version=$NEW_VERSION" >> $GITHUB_OUTPUT
-
   build:
-    needs: bump-version
     strategy:
       fail-fast: false
       matrix:
         platform: [macos-latest, ubuntu-latest, windows-latest]
 
     runs-on: ${{ matrix.platform }}
-    
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
-        with:
-          ref: ${{ github.ref }}
+
+      - name: Read version
+        id: version
+        shell: bash
+        run: |
+          VERSION=$(grep -oP '"version":\s*"\K[^"]+' grpcpeek/src-tauri/tauri.conf.json)
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -103,30 +63,29 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           projectPath: grpcpeek
-          # No code signing for now
           args: ${{ matrix.platform == 'macos-latest' && '--target universal-apple-darwin' || '' }}
 
-      # Package standalone executable for Windows
       - name: Package Windows Portable (ZIP)
         if: matrix.platform == 'windows-latest'
         shell: pwsh
         run: |
+          $VERSION = "${{ steps.version.outputs.version }}"
           cd grpcpeek/src-tauri/target/release
-          Compress-Archive -Path grpcpeek.exe -DestinationPath ../../../gRPCpeek-${{ needs.bump-version.outputs.new_version }}-windows-portable.zip
+          Compress-Archive -Path grpcpeek.exe -DestinationPath ../../../gRPCpeek-$VERSION-windows-portable.zip
 
-      # Package standalone executable for macOS
       - name: Package macOS Portable (ZIP)
         if: matrix.platform == 'macos-latest'
         run: |
+          VERSION="${{ steps.version.outputs.version }}"
           cd grpcpeek/src-tauri/target/universal-apple-darwin/release/bundle/macos
-          zip -r ../../../../../../gRPCpeek-${{ needs.bump-version.outputs.new_version }}-macos-portable.zip gRPCpeek.app
+          zip -r ../../../../../../gRPCpeek-$VERSION-macos-portable.zip gRPCpeek.app
 
-      # Package standalone executable for Linux
       - name: Package Linux Portable (tar.gz)
         if: matrix.platform == 'ubuntu-latest'
         run: |
+          VERSION="${{ steps.version.outputs.version }}"
           cd grpcpeek/src-tauri/target/release
-          tar -czf ../../../gRPCpeek-${{ needs.bump-version.outputs.new_version }}-linux-portable.tar.gz grpcpeek
+          tar -czf ../../../gRPCpeek-$VERSION-linux-portable.tar.gz grpcpeek
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
@@ -139,34 +98,36 @@ jobs:
           retention-days: 7
 
   create-release:
-    needs: [bump-version, build]
+    needs: build
     runs-on: ubuntu-latest
     permissions:
       contents: write
     steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Read version
+        id: version
+        run: |
+          VERSION=$(grep -oP '"version":\s*"\K[^"]+' grpcpeek/src-tauri/tauri.conf.json)
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+
       - name: Download all artifacts
         uses: actions/download-artifact@v4
         with:
           path: artifacts
 
-      - name: Display structure of downloaded files
-        run: ls -R artifacts
-
       - name: Prepare release files
         run: |
           mkdir -p release-files
-          # Copy Windows installers and portable
           find artifacts/windows-latest-build -name "*.msi" -exec cp {} release-files/ \;
           find artifacts/windows-latest-build -name "*-setup.exe" -exec cp {} release-files/ \;
           find artifacts/windows-latest-build -name "*-windows-portable.zip" -exec cp {} release-files/ \;
-          # Copy macOS installers and portable
           find artifacts/macos-latest-build -name "*.dmg" -exec cp {} release-files/ \;
           find artifacts/macos-latest-build -name "*-macos-portable.zip" -exec cp {} release-files/ \;
-          # Copy Linux installers and portable
           find artifacts/ubuntu-latest-build -name "*.AppImage" -exec cp {} release-files/ \;
           find artifacts/ubuntu-latest-build -name "*.deb" -exec cp {} release-files/ \;
           find artifacts/ubuntu-latest-build -name "*-linux-portable.tar.gz" -exec cp {} release-files/ \;
-          # List what we're uploading
           echo "Files to upload:"
           ls -lh release-files/
 
@@ -174,23 +135,23 @@ jobs:
         uses: softprops/action-gh-release@v1
         with:
           draft: true
-          tag_name: v${{ needs.bump-version.outputs.new_version }}
-          name: 'gRPCpeek v${{ needs.bump-version.outputs.new_version }}'
+          tag_name: v${{ steps.version.outputs.version }}
+          name: 'gRPCpeek v${{ steps.version.outputs.version }}'
           body: |
-            ## gRPCpeek v${{ needs.bump-version.outputs.new_version }}
-            
+            ## gRPCpeek v${{ steps.version.outputs.version }}
+
             ### Installation
-            
+
             **Portable Executables** (no installation required) ⭐:
             - **Windows**: Download the `-windows-portable.zip`, extract, and run `grpcpeek.exe`
             - **macOS**: Download the `-macos-portable.zip`, extract, run `xattr -cr gRPCpeek.app`, then open
             - **Linux**: Download the `.AppImage`, make it executable (`chmod +x`), and run
-            
+
             **Traditional Installers**:
             - Windows: `.msi` or `-setup.exe`
             - macOS: `.dmg`
             - Linux: `.deb`
-            
+
             ⚠️ **Note**: These builds are unsigned. Windows may show SmartScreen warnings, and macOS will require Gatekeeper bypass.
           files: release-files/*
         env:
