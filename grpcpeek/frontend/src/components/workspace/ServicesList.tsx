@@ -27,7 +27,7 @@ export function ServicesList({ services, onMethodClick, onOpenWorkspaceSettings 
     return (
       <Card className="p-8">
         <div className="space-y-4 text-center">
-          <div className="text-4xl opacity-40">📦</div>
+          <svg width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" className="opacity-30 mx-auto"><polygon points="12 2 2 7 12 12 22 7 12 2"/><polyline points="2 17 12 22 22 17"/><polyline points="2 12 12 17 22 12"/></svg>
           <div className="space-y-2">
             <h3 className="text-base font-semibold text-foreground">
               No Services Found
@@ -41,11 +41,11 @@ export function ServicesList({ services, onMethodClick, onOpenWorkspaceSettings 
               onClick={onOpenWorkspaceSettings}
               className="inline-flex items-center gap-2 rounded bg-primary px-4 py-2 text-sm font-medium text-primary-foreground transition-colors hover:bg-primary/90"
             >
-              ⚙️ Open Workspace Settings
+              Open Workspace Settings
             </button>
           </div>
           <div className="pt-4 text-xs text-muted-foreground">
-            💡 Tip: Add proto files or directories, then click "Re-parse Protos"
+            Tip: Add proto files or directories, then click "Re-parse Protos"
           </div>
         </div>
       </Card>

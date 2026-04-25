@@ -55,7 +55,7 @@ export function ResponseViewer({ tab, onClearStreaming }: ResponseViewerProps) {
     return (
       <Card className="flex min-h-0 flex-1 flex-col items-center justify-center p-6">
         <div className="space-y-2 text-center">
-          <div className="text-3xl opacity-40">📭</div>
+          <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" className="opacity-30 mx-auto"><path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07A19.5 19.5 0 0 1 4.69 12a19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 3.6 1.18h3a2 2 0 0 1 2 1.72c.127.96.361 1.903.7 2.81a2 2 0 0 1-.45 2.11L7.91 8.85a16 16 0 0 0 5.86 5.86l1.93-1.93a2 2 0 0 1 2.11-.45c.907.339 1.85.573 2.81.7A2 2 0 0 1 22 16.92z"/></svg>
           <p className="text-sm text-muted-foreground">
             No active request. Select a method to get started.
           </p>
@@ -69,7 +69,7 @@ export function ResponseViewer({ tab, onClearStreaming }: ResponseViewerProps) {
     return (
       <Card className="flex min-h-0 flex-1 flex-col items-center justify-center p-6">
         <div className="space-y-2 text-center">
-          <div className="text-3xl opacity-40">⏸️</div>
+          <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" className="opacity-30 mx-auto"><circle cx="12" cy="12" r="10"/><line x1="10" y1="15" x2="10" y2="9"/><line x1="14" y1="15" x2="14" y2="9"/></svg>
           <p className="text-sm text-muted-foreground">
             {tab.isStreaming ? 'Waiting for streaming response...' : 'No response yet. Click "Send Request" to execute.'}
           </p>
@@ -202,7 +202,7 @@ export function ResponseViewer({ tab, onClearStreaming }: ResponseViewerProps) {
             onClick={copyToClipboard}
             title={shouldBlockLargeRender ? 'Copy safe preview to clipboard' : 'Copy to clipboard'}
           >
-            {shouldBlockLargeRender ? '📋 Preview' : '📋 Copy'}
+            {shouldBlockLargeRender ? 'Preview' : 'Copy'}
           </Button>
           <Button
             variant="ghost"
@@ -210,7 +210,7 @@ export function ResponseViewer({ tab, onClearStreaming }: ResponseViewerProps) {
             onClick={downloadResponse}
             title="Download as JSON"
           >
-            💾 Download
+            Download
           </Button>
           {activeTab === 'body' && !shouldBlockLargeRender && (
             <Button
@@ -219,7 +219,7 @@ export function ResponseViewer({ tab, onClearStreaming }: ResponseViewerProps) {
               onClick={() => setShowRaw(!showRaw)}
               title={showRaw ? 'Show formatted' : 'Show raw JSON'}
             >
-              {showRaw ? '📄 Formatted' : '🔧 Raw'}
+              {showRaw ? 'Formatted' : 'Raw'}
             </Button>
           )}
         </div>
@@ -296,8 +296,8 @@ export function ResponseViewer({ tab, onClearStreaming }: ResponseViewerProps) {
                       <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
                         <div className="space-y-2">
                           <div className="flex items-center gap-3">
-                            <div className="flex h-11 w-11 items-center justify-center rounded-2xl bg-surface-muted text-2xl">
-                              📦
+                            <div className="flex h-11 w-11 items-center justify-center rounded-2xl bg-surface-muted text-muted-foreground">
+                              <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><polygon points="12 2 2 7 12 12 22 7 12 2"/><polyline points="2 17 12 22 22 17"/><polyline points="2 12 12 17 22 12"/></svg>
                             </div>
                             <div>
                               <h3 className="text-lg font-semibold text-foreground">Large response protected</h3>
@@ -323,16 +323,16 @@ export function ResponseViewer({ tab, onClearStreaming }: ResponseViewerProps) {
                         </div>
                         <div className="flex flex-wrap gap-2 lg:max-w-sm lg:justify-end">
                           <Button variant="secondary" size="sm" onClick={downloadResponse}>
-                            💾 Download Full Response
+                            Download Full Response
                           </Button>
                           <Button variant="secondary" size="sm" onClick={openResponseExternally}>
                             ↗ Open Externally
                           </Button>
                           <Button variant="ghost" size="sm" onClick={copyToClipboard}>
-                            📋 Copy Preview
+                            Copy Preview
                           </Button>
                           <Button variant="ghost" size="sm" onClick={copyMetadata}>
-                            🧾 Copy Metadata
+                            Copy Metadata
                           </Button>
                         </div>
                       </div>
@@ -400,7 +400,7 @@ export function ResponseViewer({ tab, onClearStreaming }: ResponseViewerProps) {
                   <div className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-lg border border-red-500/30 bg-red-500/5">
                     <div className="border-b border-red-500/20 bg-red-500/10 px-4 py-3">
                       <div className="flex items-center gap-2">
-                        <span className="text-xl">⚠️</span>
+                        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" className="text-red-500 flex-shrink-0"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
                         <h3 className="text-sm font-semibold text-red-700 dark:text-red-300">
                           {errorCategory || 'Error'}
                         </h3>
@@ -429,7 +429,7 @@ export function ResponseViewer({ tab, onClearStreaming }: ResponseViewerProps) {
                       {troubleshootingHints && troubleshootingHints.length > 0 && (
                         <div>
                           <h4 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground mb-2">
-                            💡 Possible Causes
+                            Possible Causes
                           </h4>
                           <ul className="space-y-2">
                             {troubleshootingHints.map((hint, index) => (
@@ -495,7 +495,7 @@ export function ResponseViewer({ tab, onClearStreaming }: ResponseViewerProps) {
           <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-hidden">
             <div className="flex justify-end gap-2">
               <Button variant="ghost" size="sm" onClick={copyMetadata}>
-                🧾 Copy Metadata
+                Copy Metadata
               </Button>
             </div>
             <div className="flex-1 overflow-y-auto">

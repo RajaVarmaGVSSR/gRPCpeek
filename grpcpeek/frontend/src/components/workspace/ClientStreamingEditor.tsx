@@ -191,17 +191,19 @@ export function ClientStreamingEditor({
                       </Button>
                     </div>
                     {message.sent ? (
-                      <pre className="rounded border border-border bg-surface-muted p-3 font-mono text-xs text-muted-foreground overflow-auto h-[300px]">
+                      <pre className="rounded border border-border bg-surface-muted p-3 font-mono text-xs text-muted-foreground overflow-auto min-h-[200px]">
                         {message.body}
                       </pre>
                     ) : (
-                      <VariableHighlightedTextarea
-                        value={message.body}
-                        onChange={(value) => updateMessageBody(index, value)}
-                        context={variableContext}
-                        placeholder='{"field": "value"}'
-                        className="h-[300px]"
-                      />
+                      <div className="min-h-[200px]" style={{ height: 'max(200px, 30vh)' }}>
+                        <VariableHighlightedTextarea
+                          value={message.body}
+                          onChange={(value) => updateMessageBody(index, value)}
+                          context={variableContext}
+                          placeholder='{"field": "value"}'
+                          className="h-full"
+                        />
+                      </div>
                     )}
                     {message.timestamp && (
                       <p className="mt-2 text-xs text-muted-foreground">

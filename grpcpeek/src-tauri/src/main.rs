@@ -3,41 +3,94 @@
 
 mod proto_parser;
 
-use regex::Regex;
-use serde::{Deserialize, Serialize};
-use serde_json::Value;
-use http::{Uri, Request as HttpRequest};
-use hyper::{Client, Body};
+use base64::{engine::general_purpose, Engine as _};
+use bytes::Buf;
+use futures::StreamExt;
+use http::{Request as HttpRequest, Uri};
+use hyper::{Body, Client};
 use hyper::client::HttpConnector;
 use hyper_rustls::HttpsConnector;
-use std::process::Command;
-use tempfile::NamedTempFile;
-use std::io::Write;
+use lazy_static::lazy_static;
+use prost::Message as ProstMessage;
 use prost_reflect::{DescriptorPool, DynamicMessage};
-use prost::Message;
-use std::sync::Arc;
+use regex::Regex;
 use rustls::{Certificate, PrivateKey};
 use rustls_pemfile::{certs, pkcs8_private_keys};
-use std::io::BufReader;
-use base64::{Engine as _, engine::general_purpose};
-use tauri::Emitter;
-use std::sync::Mutex;
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use std::collections::HashMap;
+use std::io::BufReader;
+use std::process::Command;
+use std::sync::{Arc, Mutex};
+use tauri::Emitter;
 use tokio::sync::mpsc;
 
 #[cfg(windows)]
 use std::os::windows::process::CommandExt;
 
-// Active client stream connection with channel for sending messages
+// ---------------------------------------------------------------------------
+// Application state — caches the most-recently compiled descriptor pool so
+// gRPC call commands don't recompile protos on every request.
+// ---------------------------------------------------------------------------
+
+struct AppState {
+    /// (cache_key, pool). The key is the sorted enabled import path strings joined by NUL.
+    pool: Mutex<Option<(String, Arc<DescriptorPool>)>>,
+}
+
+impl AppState {
+    fn new() -> Self {
+        Self { pool: Mutex::new(None) }
+    }
+
+    fn get_or_compile(
+        &self,
+        import_paths: &[proto_parser::ImportPath],
+    ) -> Result<Arc<DescriptorPool>, String> {
+        let key = cache_key(import_paths);
+        {
+            let guard = self.pool.lock().unwrap();
+            if let Some((k, p)) = guard.as_ref() {
+                if k == &key {
+                    return Ok(Arc::clone(p));
+                }
+            }
+        }
+        let pool = Arc::new(proto_parser::compile_descriptor_pool(import_paths)?);
+        *self.pool.lock().unwrap() = Some((key, Arc::clone(&pool)));
+        Ok(pool)
+    }
+
+    fn store(&self, import_paths: &[proto_parser::ImportPath], pool: DescriptorPool) {
+        let key = cache_key(import_paths);
+        *self.pool.lock().unwrap() = Some((key, Arc::new(pool)));
+    }
+}
+
+fn cache_key(paths: &[proto_parser::ImportPath]) -> String {
+    let mut keys: Vec<&str> = paths.iter().filter(|p| p.enabled).map(|p| p.path.as_str()).collect();
+    keys.sort();
+    keys.join("\0")
+}
+
+// ---------------------------------------------------------------------------
+// Active client stream state (client/bidi streaming)
+// ---------------------------------------------------------------------------
+
 struct ActiveClientStream {
     sender: mpsc::UnboundedSender<Vec<u8>>,
     input_desc: prost_reflect::MessageDescriptor,
     response_receiver: tokio::sync::oneshot::Receiver<Result<String, String>>,
 }
 
-lazy_static::lazy_static! {
-    static ref ACTIVE_CLIENT_STREAMS: Mutex<HashMap<String, ActiveClientStream>> = Mutex::new(HashMap::new());
+lazy_static! {
+    static ref ACTIVE_CLIENT_STREAMS: Mutex<HashMap<String, ActiveClientStream>> =
+        Mutex::new(HashMap::new());
 }
+
+// ---------------------------------------------------------------------------
+// Shared types
+// ---------------------------------------------------------------------------
 
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -72,40 +125,37 @@ pub struct TlsConfig {
 #[serde(rename_all = "camelCase")]
 pub struct AuthConfig {
     #[serde(rename = "type")]
-    pub auth_type: String,  // 'none' | 'bearer' | 'basic' | 'apiKey'
-    pub token: Option<String>,  // For bearer
-    pub username: Option<String>,  // For basic
-    pub password: Option<String>,  // For basic
-    pub key: Option<String>,  // For API key header name
-    pub value: Option<String>,  // For API key value
+    pub auth_type: String,
+    pub token: Option<String>,
+    pub username: Option<String>,
+    pub password: Option<String>,
+    pub key: Option<String>,
+    pub value: Option<String>,
 }
 
-fn load_certificates_from_file(path: &str) -> Result<Vec<Certificate>, String> {
-    let cert_file = std::fs::File::open(path)
-        .map_err(|e| format!("Failed to open certificate file '{}': {}", path, e))?;
-    let mut reader = BufReader::new(cert_file);
-    
-    let certs_result = certs(&mut reader)
+// ---------------------------------------------------------------------------
+// TLS helpers
+// ---------------------------------------------------------------------------
+
+fn load_certificates(path: &str) -> Result<Vec<Certificate>, String> {
+    let file = std::fs::File::open(path)
+        .map_err(|e| format!("Failed to open certificate '{}': {}", path, e))?;
+    let certs = certs(&mut BufReader::new(file))
         .map_err(|e| format!("Failed to parse certificates from '{}': {}", path, e))?;
-    
-    Ok(certs_result.into_iter().map(Certificate).collect())
+    Ok(certs.into_iter().map(Certificate).collect())
 }
 
-fn load_private_key_from_file(path: &str) -> Result<PrivateKey, String> {
-    let key_file = std::fs::File::open(path)
-        .map_err(|e| format!("Failed to open private key file '{}': {}", path, e))?;
-    let mut reader = BufReader::new(key_file);
-    
-    let keys = pkcs8_private_keys(&mut reader)
-        .map_err(|e| format!("Failed to parse private key from '{}': {}", path, e))?;
-    
-    keys.into_iter()
+fn load_private_key(path: &str) -> Result<PrivateKey, String> {
+    let file = std::fs::File::open(path)
+        .map_err(|e| format!("Failed to open private key '{}': {}", path, e))?;
+    pkcs8_private_keys(&mut BufReader::new(file))
+        .map_err(|e| format!("Failed to parse private key from '{}': {}", path, e))?
+        .into_iter()
         .next()
         .map(PrivateKey)
         .ok_or_else(|| format!("No private key found in '{}'", path))
 }
 
-// Custom certificate verifier that skips all verification (INSECURE - for dev only!)
 struct NoCertificateVerification;
 
 impl rustls::client::ServerCertVerifier for NoCertificateVerification {
@@ -118,51 +168,47 @@ impl rustls::client::ServerCertVerifier for NoCertificateVerification {
         _ocsp_response: &[u8],
         _now: std::time::SystemTime,
     ) -> Result<rustls::client::ServerCertVerified, rustls::Error> {
-        // Skip all verification - INSECURE!
         Ok(rustls::client::ServerCertVerified::assertion())
     }
 }
 
-fn build_https_connector(tls_config: Option<&TlsConfig>) -> Result<HttpsConnector<HttpConnector>, String> {
-    if let Some(tls_cfg) = tls_config.filter(|config| config.enabled) {
+fn build_https_connector(tls: Option<&TlsConfig>) -> Result<HttpsConnector<HttpConnector>, String> {
+    if let Some(cfg) = tls.filter(|c| c.enabled) {
         let mut root_store = rustls::RootCertStore::empty();
-
-        if let Some(ca_path) = &tls_cfg.server_ca_cert_path {
-            let ca_certs = load_certificates_from_file(ca_path)?;
-            for cert in ca_certs {
+        if let Some(ca_path) = &cfg.server_ca_cert_path {
+            for cert in load_certificates(ca_path)? {
                 root_store.add(&cert)
                     .map_err(|e| format!("Failed to add CA certificate: {}", e))?;
             }
         } else {
-            root_store.add_trust_anchors(
-                webpki_roots::TLS_SERVER_ROOTS.iter().map(|ta| {
-                    rustls::OwnedTrustAnchor::from_subject_spki_name_constraints(
-                        ta.subject.to_vec(),
-                        ta.spki.to_vec(),
-                        ta.name_constraints.as_ref().map(|nc| nc.to_vec()),
-                    )
-                })
-            );
+            root_store.add_trust_anchors(webpki_roots::TLS_SERVER_ROOTS.iter().map(|ta| {
+                rustls::OwnedTrustAnchor::from_subject_spki_name_constraints(
+                    ta.subject.to_vec(),
+                    ta.spki.to_vec(),
+                    ta.name_constraints.as_ref().map(|nc| nc.to_vec()),
+                )
+            }));
         }
 
-        let config_builder = rustls::ClientConfig::builder()
+        let builder = rustls::ClientConfig::builder()
             .with_safe_defaults()
             .with_root_certificates(root_store);
 
-        let client_config = if let (Some(cert_path), Some(key_path)) = (&tls_cfg.client_cert_path, &tls_cfg.client_key_path) {
-            let client_certs = load_certificates_from_file(cert_path)?;
-            let client_key = load_private_key_from_file(key_path)?;
-
-            config_builder.with_client_auth_cert(client_certs, client_key)
-                .map_err(|e| format!("Failed to configure client authentication: {}", e))?
+        let client_config = if let (Some(cert), Some(key)) =
+            (&cfg.client_cert_path, &cfg.client_key_path)
+        {
+            builder
+                .with_client_auth_cert(load_certificates(cert)?, load_private_key(key)?)
+                .map_err(|e| format!("Failed to configure client auth: {}", e))?
         } else {
-            config_builder.with_no_client_auth()
+            builder.with_no_client_auth()
         };
 
-        let final_config = if tls_cfg.insecure_skip_verify.unwrap_or(false) {
-            let mut config = client_config;
-            config.dangerous().set_certificate_verifier(Arc::new(NoCertificateVerification));
-            config
+        let final_config = if cfg.insecure_skip_verify.unwrap_or(false) {
+            let mut c = client_config;
+            c.dangerous()
+                .set_certificate_verifier(Arc::new(NoCertificateVerification));
+            c
         } else {
             client_config
         };
@@ -181,74 +227,128 @@ fn build_https_connector(tls_config: Option<&TlsConfig>) -> Result<HttpsConnecto
     }
 }
 
+// ---------------------------------------------------------------------------
+// Auth header helper
+// ---------------------------------------------------------------------------
+
+fn apply_auth(mut builder: hyper::http::request::Builder, auth: &AuthConfig) -> hyper::http::request::Builder {
+    match auth.auth_type.as_str() {
+        "bearer" => {
+            if let Some(token) = &auth.token {
+                builder = builder.header("authorization", format!("Bearer {}", token));
+            }
+        }
+        "basic" => {
+            if let (Some(u), Some(p)) = (&auth.username, &auth.password) {
+                let encoded = general_purpose::STANDARD.encode(format!("{}:{}", u, p).as_bytes());
+                builder = builder.header("authorization", format!("Basic {}", encoded));
+            }
+        }
+        "apiKey" => {
+            if let (Some(k), Some(v)) = (&auth.key, &auth.value) {
+                builder = builder.header(k.as_str(), v.as_str());
+            }
+        }
+        _ => {}
+    }
+    builder
+}
+
+// ---------------------------------------------------------------------------
+// gRPC framing helpers
+// ---------------------------------------------------------------------------
+
+fn grpc_frame(protobuf_bytes: &[u8]) -> Vec<u8> {
+    let mut frame = Vec::with_capacity(5 + protobuf_bytes.len());
+    frame.push(0u8); // no compression
+    frame.extend_from_slice(&(protobuf_bytes.len() as u32).to_be_bytes());
+    frame.extend_from_slice(protobuf_bytes);
+    frame
+}
+
+// ---------------------------------------------------------------------------
+// Error formatting
+// ---------------------------------------------------------------------------
+
+fn format_connection_error(raw: &str, endpoint: &str, service: &str, method: &str) -> String {
+    let (category, hints) = if raw.contains("certificate") || raw.contains("tls") || raw.contains("ssl") {
+        ("TLS/Certificate Error", vec![
+            "Server may require TLS but TLS is not enabled".to_string(),
+            "Try 'Insecure Skip Verify' for self-signed certs in development".to_string(),
+            "Check that cert/key file paths are correct".to_string(),
+        ])
+    } else if raw.contains("connection refused") {
+        ("Connection Refused", vec![
+            "Server may not be running".to_string(),
+            "Check host and port".to_string(),
+        ])
+    } else if raw.contains("broken pipe") || raw.contains("stream closed") || raw.contains("connection reset") {
+        ("Connection Closed", vec![
+            "TLS mismatch: server expects TLS but client is not using it (or vice versa)".to_string(),
+            "Server closed the connection during handshake".to_string(),
+        ])
+    } else if raw.contains("timeout") || raw.contains("timed out") {
+        ("Connection Timeout", vec![
+            "Server took too long to respond".to_string(),
+        ])
+    } else {
+        ("Error", vec![])
+    };
+
+    serde_json::json!({
+        "status": "error",
+        "error": raw,
+        "error_category": category,
+        "troubleshooting_hints": hints,
+        "grpc_status": "UNAVAILABLE",
+        "grpc_message": raw,
+        "endpoint": endpoint,
+        "service": service,
+        "method": method,
+        "response": null,
+    })
+    .to_string()
+}
+
+// ---------------------------------------------------------------------------
+// Tauri commands
+// ---------------------------------------------------------------------------
+
+/// Parse a single proto file uploaded directly by the user (legacy path).
 #[tauri::command]
 async fn parse_proto_file(proto_content: String) -> Result<Vec<ServiceInfo>, String> {
-    let mut services = Vec::new();
-
     let service_re = Regex::new(r"service\s+(\w+)\s*\{([^}]*(?:\{[^}]*\}[^}]*)*)\}")
-        .map_err(|e| format!("Failed to compile service regex: {}", e))?;
-
+        .map_err(|e| e.to_string())?;
     let rpc_re = Regex::new(
-        r"rpc\s+(\w+)\s*\(\s*(stream\s+)?([A-Za-z0-9_.]+)\s*\)\s+returns\s*\(\s*(stream\s+)?([A-Za-z0-9_.]+)\s*\)"
+        r"rpc\s+(\w+)\s*\(\s*(stream\s+)?([A-Za-z0-9_.]+)\s*\)\s+returns\s*\(\s*(stream\s+)?([A-Za-z0-9_.]+)\s*\)",
     )
-    .map_err(|e| format!("Failed to compile rpc regex: {}", e))?;
+    .map_err(|e| e.to_string())?;
 
-    for service_cap in service_re.captures_iter(&proto_content) {
-        let service_name = service_cap
-            .get(1)
-            .ok_or("Failed to extract service name")?
-            .as_str()
-            .to_string();
-
-        let service_body = service_cap
-            .get(2)
-            .ok_or("Failed to extract service body")?
-            .as_str();
-
+    let mut services = Vec::new();
+    for svc_cap in service_re.captures_iter(&proto_content) {
+        let service_name = svc_cap.get(1).ok_or("no service name")?.as_str().to_string();
+        let body = svc_cap.get(2).ok_or("no service body")?.as_str();
         let mut methods = Vec::new();
 
-        for rpc_cap in rpc_re.captures_iter(service_body) {
-            let method_name = rpc_cap
-                .get(1)
-                .ok_or("Failed to extract method name")?
-                .as_str()
-                .to_string();
-
-            let is_client_streaming = rpc_cap.get(2).is_some();
-
-            let input_type = rpc_cap
-                .get(3)
-                .ok_or("Failed to extract input type")?
-                .as_str()
-                .to_string();
-
-            let is_server_streaming = rpc_cap.get(4).is_some();
-
-            let output_type = rpc_cap
-                .get(5)
-                .ok_or("Failed to extract output type")?
-                .as_str()
-                .to_string();
-
-            let method_type = match (is_client_streaming, is_server_streaming) {
-                (false, false) => "unary",
-                (false, true) => "server_streaming",
-                (true, false) => "client_streaming",
-                (true, true) => "bidirectional_streaming",
-            }
-            .to_string();
-
+        for rpc_cap in rpc_re.captures_iter(body) {
+            let is_client = rpc_cap.get(2).is_some();
+            let is_server = rpc_cap.get(4).is_some();
             methods.push(MethodInfo {
-                name: method_name,
-                input_type,
-                output_type,
-                is_client_streaming,
-                is_server_streaming,
-                method_type,
+                name: rpc_cap.get(1).ok_or("no method name")?.as_str().to_string(),
+                input_type: rpc_cap.get(3).ok_or("no input type")?.as_str().to_string(),
+                output_type: rpc_cap.get(5).ok_or("no output type")?.as_str().to_string(),
+                is_client_streaming: is_client,
+                is_server_streaming: is_server,
+                method_type: match (is_client, is_server) {
+                    (false, false) => "unary",
+                    (false, true) => "server_streaming",
+                    (true, false) => "client_streaming",
+                    (true, true) => "bidirectional_streaming",
+                }
+                .to_string(),
                 sample_request: None,
             });
         }
-
         services.push(ServiceInfo { name: service_name, methods });
     }
 
@@ -256,22 +356,15 @@ async fn parse_proto_file(proto_content: String) -> Result<Vec<ServiceInfo>, Str
         return Err("No services found in proto file".to_string());
     }
 
-    // Try to compile proto and generate sample requests via protoc
-    if let Ok(pool) = compile_proto_to_descriptors(&proto_content) {
-        for service in &mut services {
-            for method in &mut service.methods {
-                let msg_desc = pool.all_messages().find(|m| {
-                    m.name() == method.input_type || m.full_name() == method.input_type
-                });
-                if let Some(desc) = msg_desc {
-                    let mut obj = serde_json::Map::new();
-                    for field in desc.fields() {
-                        obj.insert(
-                            field.json_name().to_string(),
-                            generate_default_value_for_field(&field),
-                        );
-                    }
-                    if let Ok(json) = serde_json::to_string_pretty(&Value::Object(obj)) {
+    // Enrich with samples using protox
+    if let Ok(pool) = proto_parser::compile_single_file(&proto_content) {
+        for svc in &mut services {
+            for method in &mut svc.methods {
+                if let Some(desc) = pool
+                    .all_messages()
+                    .find(|m| m.name() == method.input_type || m.full_name() == method.input_type)
+                {
+                    if let Ok(json) = serde_json::to_string_pretty(&build_sample(&desc)) {
                         method.sample_request = Some(json);
                     }
                 }
@@ -279,147 +372,63 @@ async fn parse_proto_file(proto_content: String) -> Result<Vec<ServiceInfo>, Str
         }
     }
 
-    // Fallback: regex-based stub for any methods still without a sample
-    let message_re = Regex::new(r"message\s+(\w+)\s*\{([\s\S]*?)\}")
-        .map_err(|e| format!("Failed to compile message regex: {}", e))?;
-    let field_re = Regex::new(
-        r"(?:repeated\s+|optional\s+)?(?:double|float|int32|int64|uint32|uint64|sint32|sint64|fixed32|fixed64|sfixed32|sfixed64|bool|string|bytes|[A-Za-z0-9_.]+)\s+(\w+)\s*="
-    )
-    .map_err(|e| format!("Failed to compile field regex: {}", e))?;
-
-    let mut message_fields: std::collections::HashMap<String, Vec<String>> = std::collections::HashMap::new();
-    for cap in message_re.captures_iter(&proto_content) {
-        let msg_name = cap.get(1).map(|m| m.as_str().to_string()).unwrap_or_default();
-        let body = cap.get(2).map(|m| m.as_str()).unwrap_or("");
-        let fields: Vec<String> = field_re
-            .captures_iter(body)
-            .filter_map(|fc| fc.get(1).map(|m| m.as_str().to_string()))
-            .collect();
-        message_fields.entry(msg_name).or_default().extend(fields);
-    }
-
-    for service in &mut services {
-        for method in &mut service.methods {
-            if method.sample_request.is_some() {
-                continue;
-            }
-            let simple_name = method.input_type.split('.').last().unwrap_or(&method.input_type);
-            let mut obj = serde_json::Map::new();
-            if let Some(fields) = message_fields.get(simple_name) {
-                for field_name in fields {
-                    let json_name = snake_to_camel(field_name);
-                    obj.insert(json_name, Value::String(String::new()));
-                }
-            }
-            if let Ok(json) = serde_json::to_string_pretty(&Value::Object(obj)) {
-                method.sample_request = Some(json);
-            }
-        }
-    }
-
     Ok(services)
 }
 
-fn compile_proto_to_descriptors(proto_content: &str) -> Result<DescriptorPool, String> {
-    let mut proto_file = NamedTempFile::with_suffix(".proto")
-        .map_err(|e| format!("Failed to create temp proto file: {}", e))?;
-    proto_file.write_all(proto_content.as_bytes())
-        .map_err(|e| format!("Failed to write proto content: {}", e))?;
-
-    let proto_path = proto_file.path().to_path_buf();
-    let proto_dir = proto_path.parent()
-        .ok_or("Failed to get proto file directory")?;
-    let file_name = proto_path
-        .file_name()
-        .ok_or("Failed to get proto filename")?
-        .to_string_lossy()
-        .to_string();
-
-    let fds = protox::compile(vec![file_name.as_str()], vec![proto_dir])
-        .map_err(|e| format!("Failed to compile proto: {}", e))?;
-
-    // proto_file stays alive until here, keeping the temp file on disk during compilation
-    let bytes = fds.encode_to_vec();
-    DescriptorPool::decode(bytes.as_slice())
-        .map_err(|e| format!("Failed to decode FileDescriptorSet: {}", e))
+/// Build a sample JSON Value for a message descriptor (used by parse_proto_file).
+fn build_sample(desc: &prost_reflect::MessageDescriptor) -> Value {
+    use prost_reflect::Kind;
+    let mut obj = serde_json::Map::new();
+    let mut seen_oneofs = std::collections::HashSet::new();
+    for field in desc.fields() {
+        if let Some(oneof) = field.containing_oneof() {
+            if !seen_oneofs.insert(oneof.name().to_string()) {
+                continue;
+            }
+        }
+        let val = if field.is_list() {
+            Value::Array(vec![])
+        } else if field.is_map() {
+            Value::Object(serde_json::Map::new())
+        } else {
+            match field.kind() {
+                Kind::String => Value::String(String::new()),
+                Kind::Bool => Value::Bool(false),
+                Kind::Bytes => Value::String(String::new()),
+                Kind::Double | Kind::Float => {
+                    Value::Number(serde_json::Number::from_f64(0.0).unwrap())
+                }
+                Kind::Int32 | Kind::Int64 | Kind::Uint32 | Kind::Uint64
+                | Kind::Sint32 | Kind::Sint64 | Kind::Fixed32 | Kind::Fixed64
+                | Kind::Sfixed32 | Kind::Sfixed64 => Value::Number(serde_json::Number::from(0)),
+                Kind::Enum(e) => e.values().next()
+                    .map(|v| Value::String(v.name().to_string()))
+                    .unwrap_or(Value::Number(0.into())),
+                Kind::Message(m) => build_sample(&m),
+            }
+        };
+        obj.insert(field.json_name().to_string(), val);
+    }
+    Value::Object(obj)
 }
 
-/// Convert snake_case to camelCase
-fn snake_to_camel(s: &str) -> String {
-    let mut result = String::new();
-    let mut capitalize_next = false;
-    for ch in s.chars() {
-        if ch == '_' {
-            capitalize_next = true;
-        } else if capitalize_next {
-            result.extend(ch.to_uppercase());
-            capitalize_next = false;
-        } else {
-            result.push(ch);
-        }
+/// Parse proto files from workspace import paths. Caches the descriptor pool so
+/// subsequent gRPC calls don't recompile.
+#[tauri::command]
+fn parse_proto_files(
+    state: tauri::State<'_, AppState>,
+    import_paths: Vec<proto_parser::ImportPath>,
+) -> proto_parser::ProtoParseResult {
+    let (result, pool) = proto_parser::parse_proto_files(import_paths.clone());
+    if let Some(p) = pool {
+        state.store(&import_paths, p);
     }
     result
 }
 
-// Helper function to format error responses as JSON for consistent frontend parsing
-fn format_error_response(
-    raw_error: &str,
-    endpoint: &str,
-    service: &str,
-    method: &str,
-    error_category: &str,
-    troubleshooting_hints: Vec<String>,
-) -> String {
-    let result = serde_json::json!({
-        "status": "error",
-        "error": raw_error,  // Preserve the exact error message
-        "error_category": error_category,
-        "troubleshooting_hints": troubleshooting_hints,
-        "grpc_status": "UNAVAILABLE",
-        "grpc_message": raw_error,
-        "endpoint": endpoint,
-        "service": service,
-        "method": method,
-        "response": null,
-    });
-    serde_json::to_string(&result).unwrap_or_else(|_| {
-        format!(r#"{{"status":"error","error":"{}"}}"#, raw_error)
-    })
-}
-
-// Helper function to read multiple gRPC frames from a response body
-fn read_grpc_frames(body_bytes: &[u8]) -> Result<Vec<Vec<u8>>, String> {
-    let mut frames = Vec::new();
-    let mut offset = 0;
-    
-    while offset + 5 <= body_bytes.len() {
-        let _compression_flag = body_bytes[offset];
-        let message_len = u32::from_be_bytes([
-            body_bytes[offset + 1],
-            body_bytes[offset + 2],
-            body_bytes[offset + 3],
-            body_bytes[offset + 4],
-        ]) as usize;
-        
-        offset += 5;
-        
-        if offset + message_len > body_bytes.len() {
-            return Err(format!(
-                "Invalid frame: expected {} bytes but only {} remaining",
-                message_len,
-                body_bytes.len() - offset
-            ));
-        }
-        
-        frames.push(body_bytes[offset..offset + message_len].to_vec());
-        offset += message_len;
-    }
-    
-    Ok(frames)
-}
-
 #[tauri::command]
 async fn call_grpc_method(
+    state: tauri::State<'_, AppState>,
     app: tauri::AppHandle,
     tab_id: String,
     service: String,
@@ -428,44 +437,30 @@ async fn call_grpc_method(
     endpoint: String,
     proto_content: Option<String>,
     import_paths: Option<Vec<proto_parser::ImportPath>>,
-    metadata: Option<std::collections::HashMap<String, String>>,
+    metadata: Option<HashMap<String, String>>,
     auth: Option<AuthConfig>,
     tls_config: Option<TlsConfig>,
 ) -> Result<String, String> {
     let request_json: Value = serde_json::from_str(&request_data)
         .map_err(|e| format!("Failed to parse request JSON: {}", e))?;
 
+    let pool = resolve_pool(&state, proto_content.as_deref(), import_paths.as_deref())?;
+
     let clean_endpoint = endpoint
         .trim_start_matches("http://")
         .trim_start_matches("https://")
         .to_string();
 
-    // Compile proto files to get descriptor pool
-    let descriptor_pool = if let Some(paths) = import_paths {
-        // Use import paths to compile protos
-        proto_parser::compile_proto_from_paths(paths)
-            .map_err(|e| format!("Failed to compile protos from import paths: {}", e))?
-    } else if let Some(content) = proto_content {
-        // Use proto content (legacy single-file approach)
-        compile_proto_to_descriptors(&content)
-            .map_err(|e| format!("Failed to compile proto: {}", e))?
-    } else {
-        return Err("Either proto_content or import_paths must be provided".to_string());
-    };
-
-    // Find the service and method descriptors
-    let service_desc = descriptor_pool
+    let service_desc = pool
         .services()
         .find(|s| s.name() == service)
         .ok_or_else(|| format!("Service '{}' not found in proto", service))?;
 
-    let package_name = service_desc.parent_file().package_name().to_string();
-
-    // Build the gRPC path: /package.ServiceName/MethodName
-    let grpc_path = if !package_name.is_empty() {
-        format!("/{}.{}/{}", package_name, service, method)
-    } else {
+    let pkg = service_desc.parent_file().package_name().to_string();
+    let grpc_path = if pkg.is_empty() {
         format!("/{}/{}", service, method)
+    } else {
+        format!("/{}.{}/{}", pkg, service, method)
     };
 
     let method_desc = service_desc
@@ -473,295 +468,138 @@ async fn call_grpc_method(
         .find(|m| m.name() == method)
         .ok_or_else(|| format!("Method '{}' not found in service '{}'", method, service))?;
 
-    // Get input/output message descriptors
     let input_desc = method_desc.input();
     let output_desc = method_desc.output();
 
-    // Encode JSON request to protobuf using descriptor-guided deserialization
-    let mut deserializer = serde_json::Deserializer::from_str(&request_data);
-    let request_msg = DynamicMessage::deserialize(input_desc.clone(), &mut deserializer)
-        .map_err(|e| format!("Failed to deserialize JSON to protobuf: {}", e))?;
+    let request_msg =
+        DynamicMessage::deserialize(input_desc.clone(), &mut serde_json::Deserializer::from_str(&request_data))
+            .map_err(|e| format!("Failed to deserialize request JSON to protobuf: {}", e))?;
 
-    // Serialize to protobuf bytes
-    let protobuf_bytes = request_msg.encode_to_vec();
+    let request_body = grpc_frame(&request_msg.encode_to_vec());
 
-    // Add gRPC message framing:
-    // - 1 byte: compression flag (0 = no compression)
-    // - 4 bytes: message length (big-endian u32)
-    // - N bytes: protobuf message body
-    let mut request_body = Vec::new();
-    request_body.push(0u8); // No compression
-    request_body.extend_from_slice(&(protobuf_bytes.len() as u32).to_be_bytes());
-    request_body.extend_from_slice(&protobuf_bytes);
-
-    // Determine if TLS is enabled
     let use_tls = tls_config.as_ref().map(|c| c.enabled).unwrap_or(false);
-    let scheme = if use_tls { "https" } else { "http" };
-    
-    // Build HTTP/2 request
-    let uri: Uri = format!("{}://{}{}", scheme, clean_endpoint, grpc_path)
-        .parse()
-        .map_err(|e| format!("Invalid URI: {}", e))?;
+    let uri: Uri = format!(
+        "{}://{}{}",
+        if use_tls { "https" } else { "http" },
+        clean_endpoint,
+        grpc_path
+    )
+    .parse()
+    .map_err(|e| format!("Invalid URI: {}", e))?;
 
     let mut req_builder = HttpRequest::builder()
         .method("POST")
         .uri(uri)
         .header("content-type", "application/grpc")
         .header("te", "trailers");
-    
-    // Add authentication headers
-    if let Some(auth_config) = auth {
-        match auth_config.auth_type.as_str() {
-            "bearer" => {
-                if let Some(token) = auth_config.token {
-                    req_builder = req_builder.header("authorization", format!("Bearer {}", token));
-                }
-            }
-            "basic" => {
-                if let (Some(username), Some(password)) = (auth_config.username, auth_config.password) {
-                    let credentials = format!("{}:{}", username, password);
-                    let encoded = general_purpose::STANDARD.encode(credentials.as_bytes());
-                    req_builder = req_builder.header("authorization", format!("Basic {}", encoded));
-                }
-            }
-            "apiKey" => {
-                if let (Some(key), Some(value)) = (auth_config.key, auth_config.value) {
-                    req_builder = req_builder.header(key, value);
-                }
-            }
-            _ => {} // "none" or unknown types - no auth header
+
+    if let Some(ref a) = auth {
+        req_builder = apply_auth(req_builder, a);
+    }
+    if let Some(ref meta) = metadata {
+        for (k, v) in meta {
+            req_builder = req_builder.header(k.as_str(), v.as_str());
         }
     }
-    
-    // Add custom metadata headers
-    if let Some(meta) = metadata {
-        for (key, value) in meta {
-            req_builder = req_builder.header(key, value);
-        }
-    }
-    
+
     let req = req_builder
         .body(Body::from(request_body))
         .map_err(|e| format!("Failed to build request: {}", e))?;
 
-    let https_connector = build_https_connector(tls_config.as_ref())?;
+    let connector = build_https_connector(tls_config.as_ref())?;
+    let client = Client::builder().http2_only(true).build::<_, Body>(connector);
 
-    let client = Client::builder()
-        .http2_only(true)
-        .build::<_, Body>(https_connector);
+    let response = client.request(req).await.map_err(|e| {
+        format_connection_error(&e.to_string(), &clean_endpoint, &service, &method)
+    })?;
 
-    let response = client
-        .request(req)
-        .await
-        .map_err(|e| {
-            // Preserve the raw error and provide helpful troubleshooting hints
-            let error_str = e.to_string();
-            
-            // Be more specific with error detection - order matters!
-            let (error_category, hints) = if error_str.contains("certificate") || error_str.contains("tls") || error_str.contains("ssl") {
-                ("TLS/Certificate Error", vec![
-                    "Server may require TLS but TLS is not enabled".to_string(),
-                    "Server certificate might not be trusted (try 'Insecure Skip Verify' for testing)".to_string(),
-                    "Client certificate may be required but not provided".to_string(),
-                    "Certificate/key file paths might be incorrect".to_string(),
-                ])
-            } else if error_str.contains("connection refused") {
-                // Most specific - server actively refusing connection
-                ("Connection Refused", vec![
-                    "Server may not be running".to_string(),
-                    "Check if host and port are correct".to_string(),
-                    "Firewall might be blocking the connection".to_string(),
-                ])
-            } else if error_str.contains("broken pipe") || error_str.contains("stream closed") || error_str.contains("connection reset") {
-                // Connection was established but closed unexpectedly
-                ("Connection Closed", vec![
-                    "Server closed the connection during handshake".to_string(),
-                    "TLS mismatch: server expects TLS but client not using it, or vice versa".to_string(),
-                    "Server may have rejected the connection".to_string(),
-                ])
-            } else if error_str.contains("timeout") || error_str.contains("timed out") {
-                ("Connection Timeout", vec![
-                    "Server took too long to respond".to_string(),
-                    "Network latency or connectivity issues".to_string(),
-                ])
-            } else if error_str.to_lowercase().contains("connect") {
-                // Generic connection issues - catch-all for connection problems
-                ("Connection Error", vec![
-                    "Unable to establish connection to server".to_string(),
-                    "Check network connectivity and firewall settings".to_string(),
-                ])
-            } else {
-                // Unknown error - no hints
-                ("Error", vec![])
-            };
-            
-            format_error_response(&error_str, &clean_endpoint, &service, &method, error_category, hints)
-        })?;
-
-    // Extract headers before consuming body
-    let grpc_status_raw = response.headers().get("grpc-status")
+    let grpc_status_raw = response
+        .headers()
+        .get("grpc-status")
         .and_then(|v| v.to_str().ok())
         .map(|s| s.to_string());
-
-    let grpc_message = response.headers().get("grpc-message")
+    let grpc_message = response
+        .headers()
+        .get("grpc-message")
         .and_then(|v| v.to_str().ok())
-        .map(|s| s.to_string())
-        .unwrap_or_else(|| String::new());
+        .unwrap_or("")
+        .to_string();
 
     let mut response_metadata = serde_json::Map::new();
     for (name, value) in response.headers() {
         if let Ok(val_str) = value.to_str() {
-            response_metadata.insert(name.as_str().to_string(), serde_json::Value::String(val_str.to_string()));
+            response_metadata.insert(name.as_str().to_string(), Value::String(val_str.to_string()));
         }
     }
 
-    // Check if this is a streaming method by checking method descriptor
     let is_server_streaming = method_desc.is_server_streaming();
-
-    // Decode gRPC framed response(s)
     let mut response_data = None;
-    let mut response_messages = Vec::new();
+    let mut response_messages: Vec<Value> = Vec::new();
     let mut decode_success = false;
 
     if is_server_streaming {
-        // Server streaming: process body as a stream and emit events in real-time
-        use futures::StreamExt;
-        use bytes::Buf;
-        
         let mut body_stream = response.into_body();
-        let mut buffer = bytes::BytesMut::new();
-        let mut message_index = 0;
-        
-        // Process streaming body frame by frame
-        while let Some(chunk_result) = body_stream.next().await {
-            match chunk_result {
-                Ok(chunk) => {
-                    buffer.extend_from_slice(&chunk);
-                    
-                    // Try to read complete gRPC frames from buffer
-                    loop {
-                        if buffer.len() < 5 {
-                            // Not enough data for frame header
-                            break;
-                        }
-                        
-                        // Read frame header
-                        let _compression_flag = buffer[0];
-                        let message_len = u32::from_be_bytes([
-                            buffer[1], buffer[2], buffer[3], buffer[4],
-                        ]) as usize;
-                        
-                        // Check if we have the complete message
-                        if buffer.len() < 5 + message_len {
-                            // Wait for more data
-                            break;
-                        }
-                        
-                        // Extract the message
-                        buffer.advance(5); // Skip header
-                        let message_bytes = buffer.split_to(message_len);
-                        
-                        // Decode and emit the message immediately
-                        match DynamicMessage::decode(output_desc.clone(), message_bytes.as_ref()) {
-                            Ok(response_msg) => {
-                                match serde_json::to_value(response_msg) {
-                                    Ok(json_value) => {
-                                        // Emit event for this streaming message immediately
-                                        let event_payload = serde_json::json!({
-                                            "tabId": tab_id,
-                                            "index": message_index,
-                                            "data": json_value,
-                                            "timestamp": chrono::Utc::now().to_rfc3339(),
-                                        });
-                                        
-                                        // Emit event - log for debugging
-                                        println!("[STREAMING] Emitting message {} at {}", message_index, chrono::Utc::now().to_rfc3339());
-                                        match app.emit("grpc-stream-message", &event_payload) {
-                                            Ok(_) => println!("[STREAMING] Event emitted successfully"),
-                                            Err(e) => eprintln!("[STREAMING] Failed to emit event: {:?}", e),
-                                        }
-                                        
-                                        response_messages.push(json_value);
-                                        message_index += 1;
-                                        decode_success = true;
-                                    }
-                                    Err(e) => {
-                                        return Err(format!("Failed to convert response to JSON: {}", e));
-                                    }
-                                }
-                            }
-                            Err(e) => {
-                                return Err(format!("Failed to decode response protobuf frame: {}", e));
-                            }
-                        }
-                    }
+        let mut buf = bytes::BytesMut::new();
+        let mut idx = 0;
+
+        while let Some(chunk) = body_stream.next().await {
+            buf.extend_from_slice(&chunk.map_err(|e| format!("Stream read error: {}", e))?);
+            loop {
+                if buf.len() < 5 {
+                    break;
                 }
-                Err(e) => {
-                    return Err(format!("Failed to read response stream: {}", e));
+                let msg_len = u32::from_be_bytes([buf[1], buf[2], buf[3], buf[4]]) as usize;
+                if buf.len() < 5 + msg_len {
+                    break;
                 }
+                buf.advance(5);
+                let msg_bytes = buf.split_to(msg_len);
+                let msg = DynamicMessage::decode(output_desc.clone(), msg_bytes.as_ref())
+                    .map_err(|e| format!("Failed to decode streaming response frame: {}", e))?;
+                let json = serde_json::to_value(msg)
+                    .map_err(|e| format!("Failed to serialize response: {}", e))?;
+
+                let _ = app.emit("grpc-stream-message", serde_json::json!({
+                    "tabId": tab_id,
+                    "index": idx,
+                    "data": json.clone(),
+                    "timestamp": chrono::Utc::now().to_rfc3339(),
+                }));
+                response_messages.push(json);
+                idx += 1;
+                decode_success = true;
             }
         }
-        
-        // For streaming, return the array directly as the response
-        response_data = Some(serde_json::Value::Array(response_messages.clone()));
+        response_data = Some(Value::Array(response_messages.clone()));
     } else {
-        // Unary: read body all at once
         let body_bytes = hyper::body::to_bytes(response.into_body())
             .await
             .map_err(|e| format!("Failed to read response: {}", e))?;
-            
-        // Read single frame
+
         if body_bytes.len() >= 5 {
-            let _compression_flag = body_bytes[0];
-            let message_len = u32::from_be_bytes([
+            let msg_len = u32::from_be_bytes([
                 body_bytes[1], body_bytes[2], body_bytes[3], body_bytes[4],
             ]) as usize;
-
-            if body_bytes.len() >= 5 + message_len {
-                let message_bytes = &body_bytes[5..5 + message_len];
-
-                // Decode protobuf response to JSON using descriptor-guided serialization
-                match DynamicMessage::decode(output_desc.clone(), message_bytes) {
-                    Ok(response_msg) => {
-                        match serde_json::to_value(response_msg) {
-                            Ok(json_value) => {
-                                response_data = Some(json_value);
-                                decode_success = true;
-                            }
-                            Err(e) => {
-                                return Err(format!("Failed to convert response to JSON: {}", e));
-                            }
-                        }
-                    }
-                    Err(e) => {
-                        return Err(format!("Failed to decode response protobuf: {}", e));
-                    }
-                }
+            if body_bytes.len() >= 5 + msg_len {
+                let msg = DynamicMessage::decode(output_desc.clone(), &body_bytes[5..5 + msg_len])
+                    .map_err(|e| format!("Failed to decode response: {}", e))?;
+                let json = serde_json::to_value(msg)
+                    .map_err(|e| format!("Failed to serialize response: {}", e))?;
+                response_data = Some(json);
+                decode_success = true;
             }
         }
     }
 
-    // Determine gRPC status: if we successfully decoded a response and no explicit error status, assume success
     let grpc_status = grpc_status_raw.unwrap_or_else(|| {
         if decode_success { "0".to_string() } else { "unknown".to_string() }
     });
 
-    let note = if grpc_status == "0" {
-        if is_server_streaming {
-            format!("✓ gRPC streaming call successful! Received {} messages.", response_messages.len())
-        } else {
-            "✓ gRPC call successful! Response decoded from protobuf.".to_string()
-        }
-    } else {
-        "✓ Connected to gRPC server. Call failed - see grpc_status and grpc_message for details.".to_string()
-    };
-
-    // Calculate approximate response size
-    let response_size = if let Some(ref data) = response_data {
-        serde_json::to_string(data).unwrap_or_default().len()
-    } else {
-        0
-    };
+    let response_size = response_data
+        .as_ref()
+        .and_then(|d| serde_json::to_string(d).ok())
+        .map(|s| s.len())
+        .unwrap_or(0);
 
     let result = serde_json::json!({
         "status": if grpc_status == "0" { "success" } else { "error" },
@@ -774,132 +612,17 @@ async fn call_grpc_method(
         "message_count": if is_server_streaming { response_messages.len() } else { 1 },
         "request": request_json,
         "response": response_data,
-        "response_metadata": serde_json::Value::Object(response_metadata),
+        "response_metadata": Value::Object(response_metadata),
         "response_size": response_size,
-        "note": note,
         "timestamp": chrono::Utc::now().to_rfc3339(),
     });
 
     Ok(serde_json::to_string_pretty(&result).unwrap())
 }
 
-fn generate_default_value_for_field(field: &prost_reflect::FieldDescriptor) -> Value {
-    use prost_reflect::Kind;
-    
-    if field.is_list() {
-        return Value::Array(vec![]);
-    }
-    
-    if field.is_map() {
-        return Value::Object(serde_json::Map::new());
-    }
-    
-    match field.kind() {
-        Kind::Double | Kind::Float => Value::Number(serde_json::Number::from_f64(0.0).unwrap()),
-        Kind::Int32 | Kind::Int64 | Kind::Uint32 | Kind::Uint64 
-        | Kind::Sint32 | Kind::Sint64 | Kind::Fixed32 | Kind::Fixed64 
-        | Kind::Sfixed32 | Kind::Sfixed64 => Value::Number(serde_json::Number::from(0)),
-        Kind::Bool => Value::Bool(false),
-        Kind::String => Value::String(String::new()),
-        Kind::Bytes => Value::String(String::from("base64_encoded_bytes")),
-        Kind::Message(msg_desc) => {
-            // Recursively generate default object for nested message
-            let mut obj = serde_json::Map::new();
-            for nested_field in msg_desc.fields() {
-                obj.insert(
-                    nested_field.json_name().to_string(),
-                    generate_default_value_for_field(&nested_field)
-                );
-            }
-            Value::Object(obj)
-        }
-        Kind::Enum(enum_desc) => {
-            // Use first enum value (usually the default/zero value)
-            if let Some(first_value) = enum_desc.values().next() {
-                Value::String(first_value.name().to_string())
-            } else {
-                Value::Number(serde_json::Number::from(0))
-            }
-        }
-    }
-}
-
-#[tauri::command]
-fn open_response_in_temp_file(file_name: String, contents: String) -> Result<String, String> {
-    let sanitized_name = Regex::new(r#"[^A-Za-z0-9._-]"#)
-        .map_err(|e| format!("Failed to build filename sanitizer: {}", e))?
-        .replace_all(&file_name, "_")
-        .into_owned();
-
-    let temp_path = std::env::temp_dir().join(sanitized_name);
-    std::fs::write(&temp_path, contents)
-        .map_err(|e| format!("Failed to write temp response file: {}", e))?;
-
-    let mut command = if cfg!(target_os = "macos") {
-        let mut command = Command::new("open");
-        command.arg(&temp_path);
-        command
-    } else if cfg!(target_os = "windows") {
-        let mut command = Command::new("cmd");
-        command.args(["/C", "start", "", &temp_path.to_string_lossy()]);
-        command
-    } else {
-        let mut command = Command::new("xdg-open");
-        command.arg(&temp_path);
-        command
-    };
-
-    #[cfg(windows)]
-    command.creation_flags(0x08000000);
-
-    command
-        .spawn()
-        .map_err(|e| format!("Failed to open response file: {}", e))?;
-
-    Ok(temp_path.to_string_lossy().to_string())
-}
-
-#[tauri::command]
-fn save_response_to_file(path: String, contents: String) -> Result<(), String> {
-    std::fs::write(&path, contents)
-        .map_err(|e| format!("Failed to save response file '{}': {}", path, e))
-}
-
-#[tauri::command]
-async fn generate_sample_request(message_type: String, proto_content: String) -> Result<String, String> {
-    // Compile proto to get descriptor pool
-    let descriptor_pool = compile_proto_to_descriptors(&proto_content)
-        .map_err(|e| format!("Failed to compile proto: {}", e))?;
-    
-    // Find the message descriptor
-    let message_desc = descriptor_pool
-        .all_messages()
-        .find(|m| m.name() == message_type || m.full_name() == message_type)
-        .ok_or_else(|| format!("Message type '{}' not found in proto", message_type))?;
-    
-    // Generate default JSON object for the message
-    let mut result = serde_json::Map::new();
-    for field in message_desc.fields() {
-        result.insert(
-            field.json_name().to_string(),
-            generate_default_value_for_field(&field)
-        );
-    }
-    
-    // Return formatted JSON
-    serde_json::to_string_pretty(&Value::Object(result))
-        .map_err(|e| format!("Failed to serialize JSON: {}", e))
-}
-
-/// New multi-phase proto parser with import resolution
-#[tauri::command]
-fn parse_proto_files(import_paths: Vec<proto_parser::ImportPath>) -> proto_parser::ProtoParseResult {
-    proto_parser::parse_proto_files(import_paths)
-}
-
-/// Initialize client streaming (open HTTP/2 stream)
 #[tauri::command]
 async fn start_client_stream(
+    state: tauri::State<'_, AppState>,
     app: tauri::AppHandle,
     tab_id: String,
     service: String,
@@ -911,359 +634,280 @@ async fn start_client_stream(
     auth: Option<AuthConfig>,
     tls_config: Option<TlsConfig>,
 ) -> Result<String, String> {
-    println!("[CLIENT_STREAMING] Starting stream for tab {}", tab_id);
-    
-    // Compile proto files to get descriptor pool
-    let descriptor_pool = if let Some(paths) = import_paths {
-        proto_parser::compile_proto_from_paths(paths)
-            .map_err(|e| format!("Failed to compile protos: {}", e))?
-    } else if let Some(content) = proto_content {
-        compile_proto_to_descriptors(&content)
-            .map_err(|e| format!("Failed to compile proto: {}", e))?
-    } else {
-        return Err("No proto content or import paths available".to_string());
-    };
-    
-    let descriptor_pool = Arc::new(descriptor_pool);
-    
-    // Find service and method descriptors
-    let service_desc = descriptor_pool
+    let pool = resolve_pool(&state, proto_content.as_deref(), import_paths.as_deref())?;
+
+    let service_desc = pool
         .services()
         .find(|s| s.name() == service)
         .ok_or_else(|| format!("Service '{}' not found", service))?;
-    
+
     let method_desc = service_desc
         .methods()
         .find(|m| m.name() == method)
         .ok_or_else(|| format!("Method '{}' not found", method))?;
-    
+
     let input_desc = method_desc.input();
     let output_desc = method_desc.output();
-    
-    // Check if this is bidirectional streaming
-    let is_bidirectional = method_desc.is_client_streaming() && method_desc.is_server_streaming();
-    println!("[CLIENT_STREAMING] Method is bidirectional: {}", is_bidirectional);
-    
-    let package_name = service_desc.parent_file().package_name().to_string();
-    let grpc_path = if !package_name.is_empty() {
-        format!("/{}.{}/{}", package_name, service, method)
-    } else {
+    let is_bidi = method_desc.is_client_streaming() && method_desc.is_server_streaming();
+
+    let pkg = service_desc.parent_file().package_name().to_string();
+    let grpc_path = if pkg.is_empty() {
         format!("/{}/{}", service, method)
+    } else {
+        format!("/{}.{}/{}", pkg, service, method)
     };
-    
+
     let clean_endpoint = endpoint
         .trim_start_matches("http://")
         .trim_start_matches("https://")
         .to_string();
-    
+
     let use_tls = tls_config.as_ref().map(|c| c.enabled).unwrap_or(false);
-    let scheme = if use_tls { "https" } else { "http" };
-    
-    let uri: Uri = format!("{}://{}{}", scheme, clean_endpoint, grpc_path)
-        .parse()
-        .map_err(|e| format!("Invalid URI: {}", e))?;
-    
-    // Create channels for streaming
+    let uri: Uri = format!(
+        "{}://{}{}",
+        if use_tls { "https" } else { "http" },
+        clean_endpoint,
+        grpc_path
+    )
+    .parse()
+    .map_err(|e| format!("Invalid URI: {}", e))?;
+
     let (message_tx, mut message_rx) = mpsc::unbounded_channel::<Vec<u8>>();
     let (response_tx, response_rx) = tokio::sync::oneshot::channel();
-    
-    // Clone values for the async task
-    let metadata_clone = metadata.clone();
-    let auth_clone = auth.clone();
-    let tls_config_clone = tls_config.clone();
-    let output_desc_clone = output_desc.clone();
-    let tab_id_clone = tab_id.clone();
-    let app_clone = app.clone();
-    
-    // Spawn a task to handle the HTTP/2 streaming request
+
+    let metadata_c = metadata.clone();
+    let auth_c = auth.clone();
+    let tls_c = tls_config.clone();
+    let output_desc_c = output_desc.clone();
+    let tab_id_c = tab_id.clone();
+    let app_c = app.clone();
+
     tokio::spawn(async move {
-        let result = async {
-            // Build HTTP request
+        let result: Result<String, String> = async {
             let mut req_builder = HttpRequest::builder()
                 .method("POST")
                 .uri(uri)
                 .header("content-type", "application/grpc")
                 .header("te", "trailers");
-            
-            // Add auth headers
-            if let Some(auth_config) = auth_clone {
-                match auth_config.auth_type.as_str() {
-                    "bearer" => {
-                        if let Some(token) = auth_config.token {
-                            req_builder = req_builder.header("authorization", format!("Bearer {}", token));
-                        }
-                    }
-                    "basic" => {
-                        if let (Some(username), Some(password)) = (auth_config.username, auth_config.password) {
-                            let credentials = format!("{}:{}", username, password);
-                            let encoded = general_purpose::STANDARD.encode(credentials.as_bytes());
-                            req_builder = req_builder.header("authorization", format!("Basic {}", encoded));
-                        }
-                    }
-                    "apiKey" => {
-                        if let (Some(key), Some(value)) = (auth_config.key, auth_config.value) {
-                            req_builder = req_builder.header(key, value);
-                        }
-                    }
-                    _ => {}
+
+            if let Some(ref a) = auth_c {
+                req_builder = apply_auth(req_builder, a);
+            }
+            if let Some(ref meta) = metadata_c {
+                for (k, v) in meta {
+                    req_builder = req_builder.header(k.as_str(), v.as_str());
                 }
             }
-            
-            // Add metadata headers
-            if let Some(meta) = metadata_clone {
-                for (key, value) in meta {
-                    req_builder = req_builder.header(key, value);
-                }
-            }
-            
-            // Create a channel-based body that we can stream to
+
             let (mut body_sender, body_receiver) = Body::channel();
-            
-            let req = req_builder
-                .body(body_receiver)
-                .map_err(|e| format!("Failed to build request: {}", e))?;
-            
-            let https_connector = build_https_connector(tls_config_clone.as_ref())?;
-            
-            let client = Client::builder()
-                .http2_only(true)
-                .build::<_, Body>(https_connector);
-            
-            // Send the request (stream will stay open)
+            let req = req_builder.body(body_receiver).map_err(|e| e.to_string())?;
+
+            let connector = build_https_connector(tls_c.as_ref())?;
+            let client = Client::builder().http2_only(true).build::<_, Body>(connector);
+
             let response_future = client.request(req);
-            
-            // Spawn a task to send messages from the channel
+
             let sender_task = tokio::spawn(async move {
-                while let Some(message_bytes) = message_rx.recv().await {
-                    println!("[CLIENT_STREAMING] Sending message of {} bytes", message_bytes.len());
-                    if body_sender.send_data(bytes::Bytes::from(message_bytes)).await.is_err() {
-                        eprintln!("[CLIENT_STREAMING] Failed to send message");
+                while let Some(msg_bytes) = message_rx.recv().await {
+                    if body_sender.send_data(bytes::Bytes::from(msg_bytes)).await.is_err() {
                         break;
                     }
                 }
-                println!("[CLIENT_STREAMING] Message channel closed, finishing stream");
             });
-            
-            // Wait for response
-            let response = response_future.await
-                .map_err(|e| format!("gRPC call failed: {}", e))?;
-            
-            // For bidirectional streaming, process response as a stream
-            if is_bidirectional {
-                use futures::StreamExt;
-                use bytes::Buf;
-                
+
+            let response = response_future.await.map_err(|e| e.to_string())?;
+
+            if is_bidi {
                 let mut body_stream = response.into_body();
-                let mut buffer = bytes::BytesMut::new();
-                let mut message_index = 0;
-                
-                // Process streaming response frames
-                while let Some(chunk_result) = body_stream.next().await {
-                    match chunk_result {
-                        Ok(chunk) => {
-                            buffer.extend_from_slice(&chunk);
-                            
-                            // Try to read complete gRPC frames from buffer
-                            loop {
-                                if buffer.len() < 5 {
-                                    break;
-                                }
-                                
-                                let _compression_flag = buffer[0];
-                                let message_len = u32::from_be_bytes([
-                                    buffer[1], buffer[2], buffer[3], buffer[4],
-                                ]) as usize;
-                                
-                                if buffer.len() < 5 + message_len {
-                                    break;
-                                }
-                                
-                                buffer.advance(5);
-                                let message_bytes = buffer.split_to(message_len);
-                                
-                                // Decode and emit the message
-                                match DynamicMessage::decode(output_desc_clone.clone(), message_bytes.as_ref()) {
-                                    Ok(response_msg) => {
-                                        match serde_json::to_value(response_msg) {
-                                            Ok(json_value) => {
-                                                let event_payload = serde_json::json!({
-                                                    "tabId": tab_id_clone,
-                                                    "index": message_index,
-                                                    "data": json_value,
-                                                    "timestamp": chrono::Utc::now().to_rfc3339(),
-                                                });
-                                                
-                                                println!("[BIDIRECTIONAL_STREAMING] Emitting response message {}", message_index);
-                                                let _ = app_clone.emit("grpc-stream-message", &event_payload);
-                                                message_index += 1;
-                                            }
-                                            Err(e) => eprintln!("[BIDIRECTIONAL_STREAMING] Failed to serialize: {}", e),
-                                        }
-                                    }
-                                    Err(e) => eprintln!("[BIDIRECTIONAL_STREAMING] Failed to decode: {}", e),
+                let mut buf = bytes::BytesMut::new();
+                let mut idx = 0;
+
+                while let Some(chunk) = body_stream.next().await {
+                    if let Ok(c) = chunk {
+                        buf.extend_from_slice(&c);
+                        loop {
+                            if buf.len() < 5 { break; }
+                            let msg_len = u32::from_be_bytes([buf[1], buf[2], buf[3], buf[4]]) as usize;
+                            if buf.len() < 5 + msg_len { break; }
+                            buf.advance(5);
+                            let msg_bytes = buf.split_to(msg_len);
+                            if let Ok(msg) = DynamicMessage::decode(output_desc_c.clone(), msg_bytes.as_ref()) {
+                                if let Ok(json) = serde_json::to_value(msg) {
+                                    let _ = app_c.emit("grpc-stream-message", serde_json::json!({
+                                        "tabId": tab_id_c,
+                                        "index": idx,
+                                        "data": json,
+                                        "timestamp": chrono::Utc::now().to_rfc3339(),
+                                    }));
+                                    idx += 1;
                                 }
                             }
                         }
-                        Err(e) => {
-                            eprintln!("[BIDIRECTIONAL_STREAMING] Stream error: {}", e);
-                            break;
-                        }
                     }
                 }
-                
-                // Ensure sender task completes
                 let _ = sender_task.await;
-                
-                // Return success (responses already emitted via events)
-                let result = serde_json::json!({
+                serde_json::to_string(&serde_json::json!({
                     "grpc_status": "0",
                     "grpc_message": "OK",
                     "message": "Bidirectional stream completed"
-                });
-                
-                serde_json::to_string(&result)
-                    .map_err(|e| format!("Failed to serialize result: {}", e))
+                }))
+                .map_err(|e| e.to_string())
             } else {
-                // For client streaming (not bidirectional), wait for single response
-                // Ensure sender task completes first
                 let _ = sender_task.await;
-                
-                // Read response body
                 let body_bytes = hyper::body::to_bytes(response.into_body())
                     .await
-                    .map_err(|e| format!("Failed to read response: {}", e))?;
-                
-                // Decode gRPC frame
+                    .map_err(|e| e.to_string())?;
+
                 if body_bytes.len() < 5 {
                     return Err("Response too short".to_string());
                 }
-                
-                let _compression_flag = body_bytes[0];
-                let message_len = u32::from_be_bytes([
+                let msg_len = u32::from_be_bytes([
                     body_bytes[1], body_bytes[2], body_bytes[3], body_bytes[4],
                 ]) as usize;
-                
-                if body_bytes.len() < 5 + message_len {
+                if body_bytes.len() < 5 + msg_len {
                     return Err("Incomplete response".to_string());
                 }
-                
-                let message_bytes = &body_bytes[5..5 + message_len];
-                let response_msg = DynamicMessage::decode(output_desc_clone, message_bytes)
-                    .map_err(|e| format!("Failed to decode response: {}", e))?;
-                
-                let response_json = serde_json::to_value(response_msg)
-                    .map_err(|e| format!("Failed to serialize response: {}", e))?;
-                
-                let result = serde_json::json!({
-                    "response": response_json,
+                let msg = DynamicMessage::decode(output_desc_c, &body_bytes[5..5 + msg_len])
+                    .map_err(|e| e.to_string())?;
+                let json = serde_json::to_value(msg).map_err(|e| e.to_string())?;
+                serde_json::to_string(&serde_json::json!({
+                    "response": json,
                     "grpc_status": "0",
                     "grpc_message": "OK"
-                });
-                
-                serde_json::to_string(&result)
-                    .map_err(|e| format!("Failed to serialize result: {}", e))
+                }))
+                .map_err(|e| e.to_string())
             }
-        }.await;
-        
-        // Send result back through channel
+        }
+        .await;
+
         let _ = response_tx.send(result);
     });
-    
-    // Store the active stream
-    let stream = ActiveClientStream {
-        sender: message_tx,
-        input_desc: input_desc.clone(),
-        response_receiver: response_rx,
-    };
-    
-    let mut streams = ACTIVE_CLIENT_STREAMS.lock().unwrap();
-    streams.insert(tab_id.clone(), stream);
-    
+
+    ACTIVE_CLIENT_STREAMS.lock().unwrap().insert(
+        tab_id.clone(),
+        ActiveClientStream {
+            sender: message_tx,
+            input_desc,
+            response_receiver: response_rx,
+        },
+    );
+
     Ok("Stream opened".to_string())
 }
 
-/// Send a message in a client streaming request
 #[tauri::command]
 async fn send_stream_message(
     tab_id: String,
     message_id: String,
     body: String,
 ) -> Result<String, String> {
-    println!("[CLIENT_STREAMING] Sending message {} for tab {}", message_id, tab_id);
-    
-    // Get the active stream
     let (sender, input_desc) = {
         let streams = ACTIVE_CLIENT_STREAMS.lock().unwrap();
-        let stream = streams.get(&tab_id)
-            .ok_or_else(|| "Stream not found. Start the stream first.".to_string())?;
-        (stream.sender.clone(), stream.input_desc.clone())
+        let s = streams
+            .get(&tab_id)
+            .ok_or("Stream not found. Start the stream first.")?;
+        (s.sender.clone(), s.input_desc.clone())
     };
-    
-    // Parse and encode the message
-    let _request_json: Value = serde_json::from_str(&body)
-        .map_err(|e| format!("Failed to parse JSON: {}", e))?;
-    
-    let mut deserializer = serde_json::Deserializer::from_str(&body);
-    let message = DynamicMessage::deserialize(input_desc, &mut deserializer)
+
+    let msg = DynamicMessage::deserialize(input_desc, &mut serde_json::Deserializer::from_str(&body))
         .map_err(|e| format!("Failed to deserialize message: {}", e))?;
-    
-    let protobuf_bytes = message.encode_to_vec();
-    
-    // Add gRPC framing
-    let mut framed_message = Vec::new();
-    framed_message.push(0u8); // No compression
-    framed_message.extend_from_slice(&(protobuf_bytes.len() as u32).to_be_bytes());
-    framed_message.extend_from_slice(&protobuf_bytes);
-    
-    // Send through channel (this will send immediately over HTTP/2)
-    sender.send(framed_message)
+
+    sender
+        .send(grpc_frame(&msg.encode_to_vec()))
         .map_err(|_| "Failed to send message, stream may be closed".to_string())?;
-    
-    println!("[CLIENT_STREAMING] Message {} sent successfully", message_id);
+
     Ok(format!("Message {} sent", message_id))
 }
 
-/// Finish a client streaming request (close stream and get response)
 #[tauri::command]
-async fn finish_streaming(
-    tab_id: String,
-) -> Result<String, String> {
-    println!("[CLIENT_STREAMING] Finishing stream for tab {}", tab_id);
-    
-    // Remove the stream and get its response receiver
+async fn finish_streaming(tab_id: String) -> Result<String, String> {
     let response_receiver = {
         let mut streams = ACTIVE_CLIENT_STREAMS.lock().unwrap();
-        let stream = streams.remove(&tab_id)
-            .ok_or_else(|| "Stream not found. Start the stream first.".to_string())?;
-        
-        // Drop the sender to close the stream (this signals end-of-stream to server)
-        drop(stream.sender);
-        
-        stream.response_receiver
+        let s = streams
+            .remove(&tab_id)
+            .ok_or("Stream not found. Start the stream first.")?;
+        drop(s.sender); // closing the sender signals end-of-stream to the server
+        s.response_receiver
     };
-    
-    // Wait for the response from the background task
-    println!("[CLIENT_STREAMING] Waiting for server response...");
-    let result = response_receiver.await
-        .map_err(|_| "Failed to receive response from stream task".to_string())?;
-    
-    println!("[CLIENT_STREAMING] Received response");
-    result
+
+    response_receiver
+        .await
+        .map_err(|_| "Failed to receive response from stream task".to_string())?
 }
+
+#[tauri::command]
+fn open_response_in_temp_file(file_name: String, contents: String) -> Result<String, String> {
+    let sanitized = Regex::new(r#"[^A-Za-z0-9._-]"#)
+        .map_err(|e| e.to_string())?
+        .replace_all(&file_name, "_")
+        .into_owned();
+
+    let temp_path = std::env::temp_dir().join(sanitized);
+    std::fs::write(&temp_path, contents)
+        .map_err(|e| format!("Failed to write temp file: {}", e))?;
+
+    let mut cmd = if cfg!(target_os = "macos") {
+        let mut c = Command::new("open");
+        c.arg(&temp_path);
+        c
+    } else if cfg!(target_os = "windows") {
+        let mut c = Command::new("cmd");
+        c.args(["/C", "start", "", &temp_path.to_string_lossy()]);
+        c
+    } else {
+        let mut c = Command::new("xdg-open");
+        c.arg(&temp_path);
+        c
+    };
+
+    #[cfg(windows)]
+    cmd.creation_flags(0x08000000);
+
+    cmd.spawn().map_err(|e| format!("Failed to open file: {}", e))?;
+    Ok(temp_path.to_string_lossy().to_string())
+}
+
+#[tauri::command]
+fn save_response_to_file(path: String, contents: String) -> Result<(), String> {
+    std::fs::write(&path, contents)
+        .map_err(|e| format!("Failed to save file '{}': {}", path, e))
+}
+
+// ---------------------------------------------------------------------------
+// Pool resolution helper (shared by call_grpc_method and start_client_stream)
+// ---------------------------------------------------------------------------
+
+fn resolve_pool(
+    state: &tauri::State<'_, AppState>,
+    proto_content: Option<&str>,
+    import_paths: Option<&[proto_parser::ImportPath]>,
+) -> Result<Arc<DescriptorPool>, String> {
+    if let Some(paths) = import_paths {
+        state.get_or_compile(paths)
+    } else if let Some(content) = proto_content {
+        proto_parser::compile_single_file(content).map(Arc::new)
+    } else {
+        Err("Either proto_content or import_paths must be provided".to_string())
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Entry point
+// ---------------------------------------------------------------------------
 
 fn main() {
     tauri::Builder::default()
+        .manage(AppState::new())
         .plugin(tauri_plugin_dialog::init())
         .invoke_handler(tauri::generate_handler![
             parse_proto_file,
-            call_grpc_method,
-            generate_sample_request,
             parse_proto_files,
-            open_response_in_temp_file,
-            save_response_to_file,
+            call_grpc_method,
             start_client_stream,
             send_stream_message,
-            finish_streaming
+            finish_streaming,
+            open_response_in_temp_file,
+            save_response_to_file,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

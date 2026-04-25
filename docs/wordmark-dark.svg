@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 340 80" width="340" height="80">
+  <!-- Orange tile mark (scaled from 128x128 to 72x72, centered in 80px height) -->
+  <g transform="translate(4, 4) scale(0.5625)">
+    <rect width="128" height="128" rx="26" fill="#da5800"/>
+    <circle cx="58" cy="58" r="28" fill="#ffffff"/>
+    <path d="M86 58 V96 Q86 108 72 108 H46" fill="none" stroke="#ffffff" stroke-width="14" stroke-linecap="round" stroke-linejoin="round"/>
+    <rect x="46" y="54.625" width="24" height="6.75" rx="3.375" fill="#da5800"/>
+  </g>
+  <!-- Wordmark text -->
+  <text x="88" y="52" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="36" font-weight="700" letter-spacing="-0.5">
+    <tspan fill="#e8e8e8">gRPC</tspan><tspan fill="#da5800">peek</tspan>
+  </text>
+  <text x="89" y="70" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="13" font-weight="400" fill="#9ca3af">Native gRPC client for macOS, Windows &amp; Linux</text>
+</svg>

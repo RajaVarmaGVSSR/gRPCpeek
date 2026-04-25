@@ -6,42 +6,43 @@
 
 @layer base {
   :root {
-    --color-background: #f6f8fb;
-    --color-foreground: #141b2c;
-    --color-muted: #eef1f8;
-    --color-muted-foreground: #47506b;
-    --color-border: #d7deea;
-    --color-surface: #ffffff;
-    --color-surface-muted: #f1f4fa;
-    --color-surface-emphasis: #2563eb;
-    --color-surface-contrast: #ffffff;
-    --color-accent: #2563eb;
-    --color-accent-contrast: #ffffff;
-    --color-focus: #90b4ff;
-    --color-danger: #dc2626;
+    /* RGB channel format required for Tailwind opacity modifiers (e.g. bg-surface/50) */
+    --color-background: 246 248 251;      /* #f6f8fb */
+    --color-foreground: 20 27 44;         /* #141b2c */
+    --color-muted: 238 241 248;           /* #eef1f8 */
+    --color-muted-foreground: 71 80 107;  /* #47506b */
+    --color-border: 215 222 234;          /* #d7deea */
+    --color-surface: 255 255 255;         /* #ffffff */
+    --color-surface-muted: 241 244 250;   /* #f1f4fa */
+    --color-surface-emphasis: 37 99 235;  /* #2563eb */
+    --color-surface-contrast: 255 255 255;/* #ffffff */
+    --color-accent: 37 99 235;            /* #2563eb */
+    --color-accent-contrast: 255 255 255; /* #ffffff */
+    --color-focus: 144 180 255;           /* #90b4ff */
+    --color-danger: 220 38 38;            /* #dc2626 */
   }
 
   .dark {
-    --color-background: #111827;
-    --color-foreground: #e2e8f0;
-    --color-muted: #1f2937;
-    --color-muted-foreground: #94a3b8;
-    --color-border: #1f2937;
-    --color-surface: #151d2d;
-    --color-surface-muted: #1e2840;
-    --color-surface-emphasis: #3b82f6;
-    --color-surface-contrast: #f8fafc;
-    --color-accent: #3b82f6;
-    --color-accent-contrast: #0f172a;
-    --color-focus: #60a5fa;
-    --color-danger: #f87171;
+    --color-background: 10 10 10;         /* #0a0a0a */
+    --color-foreground: 228 228 228;      /* #e4e4e4 */
+    --color-muted: 26 26 26;              /* #1a1a1a */
+    --color-muted-foreground: 113 113 113;/* #717171 */
+    --color-border: 60 60 60;             /* dark gray — scales via opacity modifiers */
+    --color-surface: 20 20 20;            /* #141414 */
+    --color-surface-muted: 28 28 28;      /* #1c1c1c */
+    --color-surface-emphasis: 59 130 246; /* #3b82f6 */
+    --color-surface-contrast: 250 250 250;/* #fafafa */
+    --color-accent: 59 130 246;           /* #3b82f6 */
+    --color-accent-contrast: 10 10 10;    /* #0a0a0a */
+    --color-focus: 96 165 250;            /* #60a5fa */
+    --color-danger: 248 113 113;          /* #f87171 */
   }
 
   body {
     margin: 0;
     font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
-    background-color: var(--color-background);
-    color: var(--color-foreground);
+    background-color: rgb(var(--color-background));
+    color: rgb(var(--color-foreground));
     line-height: 1.5;
     -webkit-font-smoothing: antialiased;
     text-rendering: optimizeLegibility;

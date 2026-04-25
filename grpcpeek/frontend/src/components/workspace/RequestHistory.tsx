@@ -11,7 +11,7 @@ export function RequestHistory({ history, onRequestClick }: RequestHistoryProps)
     return (
       <Card className="p-6">
         <div className="space-y-2 text-center">
-          <div className="text-2xl">🕒</div>
+          <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" className="opacity-30 mx-auto"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
           <p className="text-sm text-muted-foreground">
             No request history yet. Execute a request to see it here.
           </p>

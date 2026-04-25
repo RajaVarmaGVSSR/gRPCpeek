@@ -1,12 +1,19 @@
-# gRPCpeek
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/wordmark-dark.svg">
+    <img src="docs/wordmark-light.svg" alt="gRPCpeek" width="340">
+  </picture>
+</p>
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![Built with Tauri](https://img.shields.io/badge/Built%20with-Tauri-24c8db.svg)](https://tauri.app/)
-[![React](https://img.shields.io/badge/Frontend-React%20%2B%20TypeScript-61dafb.svg)](https://react.dev/)
+<p align="center">
+  <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-6b7280?style=flat-square" alt="MIT License"></a>
+  <a href="https://tauri.app/"><img src="https://img.shields.io/badge/Tauri-2-6b7280?style=flat-square" alt="Tauri 2"></a>
+  <a href="https://react.dev/"><img src="https://img.shields.io/badge/React_+_TypeScript-6b7280?style=flat-square" alt="React + TypeScript"></a>
+</p>
 
-gRPCpeek is an open-source desktop client for exploring, testing, and debugging gRPC APIs. It gives you a native, lightweight workspace for importing proto files, sending gRPC requests, inspecting responses, and organizing the requests you use every day.
-
-It is built with Tauri, Rust, React, TypeScript, and Tailwind CSS.
+<p align="center">
+  Open-source desktop gRPC client — import protos, send requests, inspect responses, organize your workspace.
+</p>
 
 ![gRPCpeek app overview](docs/screenshots/app-overview.svg)
 

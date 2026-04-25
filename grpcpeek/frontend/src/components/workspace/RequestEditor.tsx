@@ -281,7 +281,7 @@ export function RequestEditor({
             disabled={isGenerating || !canGenerateSample}
             title={!canGenerateSample ? 'Run in Tauri mode to reset to sample' : 'Reset request body to sample'}
           >
-            {isGenerating ? 'Resetting...' : '🔄 Reset to Sample'}
+            {isGenerating ? 'Resetting...' : 'Reset to Sample'}
           </Button>
         </div>
         
@@ -292,11 +292,11 @@ export function RequestEditor({
             disabled={tab.isLoading}
             className="flex-1"
           >
-            {tab.isLoading 
-              ? '⏳ Calling...' 
-              : isClientStreaming && tab.streamConnectionOpen 
-                ? '✓ Finish Streaming' 
-                : '🚀 Send Request'
+            {tab.isLoading
+              ? 'Calling...'
+              : isClientStreaming && tab.streamConnectionOpen
+                ? 'Finish Streaming'
+                : 'Send Request'
             }
           </Button>
           <Button
@@ -305,7 +305,7 @@ export function RequestEditor({
             title="Save request"
             className="px-4"
           >
-            💾 Save
+            Save
           </Button>
         </div>
       </div>
@@ -357,7 +357,9 @@ export function RequestEditor({
               : 'text-muted-foreground hover:text-foreground'
           }`}
         >
-          TLS {tab.tls?.enabled && '🔒'}
+          TLS {tab.tls?.enabled && (
+          <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="inline ml-0.5"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
+        )}
         </button>
       </div>
 
@@ -404,7 +406,7 @@ export function RequestEditor({
                 />
                 {tab.requestBody && (
                   <p className="flex-shrink-0 text-xs text-muted-foreground">
-                    💡 Use <code className="px-1 py-0.5 rounded bg-surface-muted font-mono">{'{{env.varName}}'}</code> or <code className="px-1 py-0.5 rounded bg-surface-muted font-mono">{'{{global.varName}}'}</code> for dynamic values.
+                    Use <code className="px-1 py-0.5 rounded bg-surface-muted font-mono">{'{{env.varName}}'}</code> or <code className="px-1 py-0.5 rounded bg-surface-muted font-mono">{'{{global.varName}}'}</code> for dynamic values.
                     Click variables to see resolved values.
                   </p>
                 )}
@@ -457,12 +459,12 @@ export function RequestEditor({
                           title="Environment header (read-only)"
                         />
                         <div className="h-9 w-9 flex items-center justify-center text-muted-foreground" title="Inherited from environment">
-                          🔒
+                          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
                         </div>
                       </div>
                     ))}
                     <p className="text-xs text-muted-foreground mt-2">
-                      💡 These headers are inherited from the environment. Edit them in Workspace Settings → Environments.
+                      These headers are inherited from the environment. Edit them in Workspace Settings → Environments.
                     </p>
                   </div>
                 ) : (
@@ -527,7 +529,7 @@ export function RequestEditor({
 
               {metadataEntries.length > 0 && (
                 <p className="text-xs text-muted-foreground">
-                  💡 Request headers will override environment headers with the same name.
+                  Request headers will override environment headers with the same name.
                 </p>
               )}
             </div>
@@ -639,7 +641,9 @@ export function RequestEditor({
                 className="h-4 w-4 rounded border-border text-primary focus:ring-2 focus:ring-primary/20"
               />
               <Label htmlFor="tls-enabled" className="text-base font-semibold">
-                Enable TLS/SSL {tab.tls?.enabled && '🔒'}
+                Enable TLS/SSL {tab.tls?.enabled && (
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="inline ml-1"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
+              )}
               </Label>
             </div>
 

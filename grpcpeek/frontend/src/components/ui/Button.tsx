@@ -16,7 +16,7 @@ const variantStyles: Record<ButtonVariant, string> = {
   primary:
     'bg-surface-emphasis text-surface-contrast shadow-soft transition-all duration-200 ease-in-out hover:bg-accent hover:text-accent-contrast hover:shadow-md hover:scale-105 active:scale-100 focus-visible:ring-2 focus-visible:ring-focus/60',
   secondary:
-    'bg-surface text-foreground border border-border/80 transition-all duration-200 ease-in-out hover:border-focus/60 hover:bg-surface-muted hover:shadow-sm hover:scale-102 active:scale-100 focus-visible:ring-2 focus-visible:ring-focus/50',
+    'bg-surface text-foreground border border-border/70 transition-all duration-200 ease-in-out hover:border-focus/60 hover:bg-surface-muted hover:shadow-sm hover:scale-102 active:scale-100 focus-visible:ring-2 focus-visible:ring-focus/50',
   ghost:
     'bg-transparent text-foreground transition-all duration-150 ease-in-out hover:bg-surface-muted/60 hover:scale-105 active:scale-100 focus-visible:ring-2 focus-visible:ring-focus/40',
   danger:

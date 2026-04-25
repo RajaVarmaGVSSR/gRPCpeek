@@ -1,11 +1,13 @@
-use prost::Message;
+use prost::Message as ProstMessage;
 use prost_reflect::{DescriptorPool, FieldDescriptor, MessageDescriptor};
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use std::collections::HashSet;
 use std::fs;
+use std::io::Write;
 use std::path::{Path, PathBuf};
+use tempfile::NamedTempFile;
 use walkdir::WalkDir;
 
 const MAX_SAMPLE_DEPTH: usize = 4;
@@ -58,31 +60,24 @@ pub struct ProtoParseError {
     pub suggestion: Option<String>,
 }
 
-pub fn parse_proto_files(import_paths: Vec<ImportPath>) -> ProtoParseResult {
+/// Parse proto files from import paths, generate sample requests, and return the compiled
+/// descriptor pool so callers can cache it and skip recompilation on subsequent gRPC calls.
+pub fn parse_proto_files(import_paths: Vec<ImportPath>) -> (ProtoParseResult, Option<DescriptorPool>) {
     let mut errors = Vec::new();
     let mut warnings = Vec::new();
 
-    let enabled_imports: Vec<ImportPath> = import_paths
-        .into_iter()
-        .filter(|p| p.enabled)
-        .collect();
+    let enabled: Vec<ImportPath> = import_paths.into_iter().filter(|p| p.enabled).collect();
 
-    if enabled_imports.is_empty() {
+    if enabled.is_empty() {
         errors.push(ProtoParseError {
             file: "workspace".to_string(),
             message: "All import paths are disabled".to_string(),
             suggestion: Some("Enable at least one proto import path".to_string()),
         });
-
-        return ProtoParseResult {
-            success: false,
-            services: Vec::new(),
-            errors,
-            warnings,
-        };
+        return (ProtoParseResult { success: false, services: vec![], errors, warnings }, None);
     }
 
-    let proto_paths = discover_proto_files(&enabled_imports, &mut warnings);
+    let proto_paths = discover_proto_files(&enabled, &mut warnings);
 
     if proto_paths.is_empty() {
         errors.push(ProtoParseError {
@@ -90,71 +85,216 @@ pub fn parse_proto_files(import_paths: Vec<ImportPath>) -> ProtoParseResult {
             message: "No .proto files found in the configured import paths".to_string(),
             suggestion: Some("Add directories or files that contain proto definitions".to_string()),
         });
-
-        return ProtoParseResult {
-            success: false,
-            services: Vec::new(),
-            errors,
-            warnings,
-        };
+        return (ProtoParseResult { success: false, services: vec![], errors, warnings }, None);
     }
 
     let proto_files = read_proto_files(&proto_paths, &mut errors);
 
     if proto_files.is_empty() {
-        return ProtoParseResult {
-            success: false,
-            services: Vec::new(),
-            errors,
-            warnings,
-        };
+        return (ProtoParseResult { success: false, services: vec![], errors, warnings }, None);
     }
 
     let mut services = extract_services(&proto_files, &mut warnings);
 
-    let descriptor_pool = match compile_proto_bundle(&proto_files, &enabled_imports) {
-        Ok(pool) => Some(pool),
+    let pool = match compile_with_protox(&proto_files, &enabled) {
+        Ok(pool) => {
+            enrich_with_samples(&mut services, &pool, &mut warnings);
+            Some(pool)
+        }
         Err(err) => {
             errors.push(ProtoParseError {
-                file: "proto_compilation".to_string(),
+                file: "protox".to_string(),
                 message: err.clone(),
-                suggestion: Some("Check your proto file syntax and import paths".to_string()),
+                suggestion: Some("Check that import paths are correct and proto files are valid".to_string()),
             });
             warnings.push(format!(
-                "Sample request generation unavailable: proto compilation failed ({}). Methods will have no pre-filled request bodies.",
+                "Sample request generation degraded: {}. Falling back to regex-based stubs.",
                 err
             ));
             None
         }
     };
 
-    if let Some(ref pool) = descriptor_pool {
-        enrich_with_samples(&mut services, pool, &mut warnings);
-    }
+    // Regex-based fallback for any methods still missing a sample
+    generate_stub_samples(&mut services, &proto_files, &mut warnings);
 
     services.sort_by(|a, b| {
-        let pkg_cmp = a.package_name.cmp(&b.package_name);
-        if pkg_cmp == std::cmp::Ordering::Equal {
-            a.name.cmp(&b.name)
-        } else {
-            pkg_cmp
-        }
+        a.package_name.cmp(&b.package_name)
+            .then_with(|| a.name.cmp(&b.name))
     });
-
     for service in &mut services {
-        service
-            .methods
-            .sort_by(|a, b| a.name.cmp(&b.name));
+        service.methods.sort_by(|a, b| a.name.cmp(&b.name));
     }
 
     let success = errors.is_empty() || !services.is_empty();
+    (ProtoParseResult { success, services, errors, warnings }, pool)
+}
 
-    ProtoParseResult {
-        success,
-        services,
-        errors,
-        warnings,
+/// Compile a descriptor pool from import paths. Used by gRPC call commands when
+/// the pool is not already cached in application state.
+pub fn compile_descriptor_pool(import_paths: &[ImportPath]) -> Result<DescriptorPool, String> {
+    let enabled: Vec<ImportPath> = import_paths.iter().filter(|p| p.enabled).cloned().collect();
+
+    if enabled.is_empty() {
+        return Err("No enabled import paths".to_string());
     }
+
+    let mut warnings = Vec::new();
+    let proto_paths = discover_proto_files(&enabled, &mut warnings);
+
+    if proto_paths.is_empty() {
+        return Err("No .proto files found in import paths".to_string());
+    }
+
+    let mut errors = Vec::new();
+    let proto_files = read_proto_files(&proto_paths, &mut errors);
+
+    if !errors.is_empty() {
+        return Err(format!("Failed to read proto files: {:?}", errors));
+    }
+
+    compile_with_protox(&proto_files, &enabled)
+}
+
+/// Compile a descriptor pool from raw proto file content (single-file legacy path).
+pub fn compile_single_file(proto_content: &str) -> Result<DescriptorPool, String> {
+    let mut temp_file = NamedTempFile::with_suffix(".proto")
+        .map_err(|e| format!("Failed to create temp proto file: {}", e))?;
+    temp_file
+        .write_all(proto_content.as_bytes())
+        .map_err(|e| format!("Failed to write proto content: {}", e))?;
+
+    let proto_path = temp_file.path().to_path_buf();
+    let proto_dir = proto_path
+        .parent()
+        .ok_or("Failed to get proto file directory")?;
+    let file_name = proto_path
+        .file_name()
+        .ok_or("Failed to get proto filename")?
+        .to_string_lossy()
+        .to_string();
+
+    // temp_file must stay alive until protox finishes reading it
+    let fds = protox::compile(vec![file_name.as_str()], vec![proto_dir])
+        .map_err(|e| format!("Proto compilation failed: {}", e))?;
+
+    drop(temp_file);
+
+    let bytes = fds.encode_to_vec();
+    DescriptorPool::decode(bytes.as_slice())
+        .map_err(|e| format!("Failed to decode descriptor pool: {}", e))
+}
+
+// ---------------------------------------------------------------------------
+// Internal helpers
+// ---------------------------------------------------------------------------
+
+fn compile_with_protox(
+    proto_files: &[(PathBuf, String)],
+    import_paths: &[ImportPath],
+) -> Result<DescriptorPool, String> {
+    // Build deduplicated include directories from configured import paths
+    let mut seen = HashSet::new();
+    let mut include_dirs: Vec<PathBuf> = import_paths
+        .iter()
+        .filter_map(|p| {
+            let path = Path::new(&p.path);
+            if path.is_dir() {
+                Some(path.to_path_buf())
+            } else {
+                path.parent().map(|parent| parent.to_path_buf())
+            }
+        })
+        .filter(|p| seen.insert(p.clone()))
+        .collect();
+
+    // Some projects store vendor protos in subdirectories (e.g. google/type/money.proto
+    // living under proto/parent/google/type/money.proto). Scan for any import statements
+    // that don't resolve under the current include dirs and add the missing parent dirs.
+    for extra in find_extra_include_dirs(proto_files, &include_dirs, import_paths) {
+        if seen.insert(extra.clone()) {
+            include_dirs.push(extra);
+        }
+    }
+
+    // Only compile files that declare services; protox resolves transitive imports automatically
+    let service_files: Vec<String> = proto_files
+        .iter()
+        .filter(|(_, content)| has_service_definition(content))
+        .filter_map(|(path, _)| relative_to_include_dir(path, &include_dirs))
+        .collect();
+
+    if service_files.is_empty() {
+        return Err("No proto files with service definitions found".to_string());
+    }
+
+    let fds = protox::compile(&service_files, &include_dirs)
+        .map_err(|e| format!("Proto compilation failed: {}", e))?;
+
+    let bytes = fds.encode_to_vec();
+    DescriptorPool::decode(bytes.as_slice())
+        .map_err(|e| format!("Failed to decode descriptor pool: {}", e))
+}
+
+/// For each import statement that cannot be satisfied by any of `include_dirs`,
+/// walk the configured import path directories looking for a subdirectory that
+/// would resolve the import. Returns the extra parent directories to add.
+fn find_extra_include_dirs(
+    proto_files: &[(PathBuf, String)],
+    include_dirs: &[PathBuf],
+    import_paths: &[ImportPath],
+) -> Vec<PathBuf> {
+    let import_re = Regex::new(r#"import\s+"([^"]+)";"#).expect("valid import regex");
+
+    // Collect all import statements from proto file contents
+    let all_imports: HashSet<String> = proto_files
+        .iter()
+        .flat_map(|(_, content)| {
+            import_re
+                .captures_iter(content)
+                .filter_map(|cap| cap.get(1).map(|m| m.as_str().to_string()))
+        })
+        .collect();
+
+    let mut extra: Vec<PathBuf> = Vec::new();
+    let mut seen: HashSet<PathBuf> = include_dirs.iter().cloned().collect();
+
+    for import_stmt in &all_imports {
+        // Already resolvable — nothing to do
+        if include_dirs.iter().any(|d| d.join(import_stmt).exists()) {
+            continue;
+        }
+        if extra.iter().any(|d| d.join(import_stmt).exists()) {
+            continue;
+        }
+
+        // Find the first path component so we can search for a matching directory
+        let first = match import_stmt.split('/').next() {
+            Some(s) if !s.is_empty() => s,
+            _ => continue,
+        };
+
+        'outer: for ip in import_paths {
+            let root = Path::new(&ip.path);
+            if !root.is_dir() {
+                continue;
+            }
+            for entry in WalkDir::new(root).max_depth(5).into_iter().filter_map(|e| e.ok()) {
+                if entry.file_type().is_dir()
+                    && entry.file_name().to_str() == Some(first)
+                {
+                    if let Some(parent) = entry.path().parent() {
+                        if parent.join(import_stmt).exists() && seen.insert(parent.to_path_buf()) {
+                            extra.push(parent.to_path_buf());
+                            break 'outer;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    extra
 }
 
 fn discover_proto_files(import_paths: &[ImportPath], warnings: &mut Vec<String>) -> Vec<PathBuf> {
@@ -162,18 +302,17 @@ fn discover_proto_files(import_paths: &[ImportPath], warnings: &mut Vec<String>)
     let mut seen = HashSet::new();
 
     for import in import_paths {
-        let candidate_path = Path::new(&import.path);
+        let candidate = Path::new(&import.path);
 
-        if !candidate_path.exists() {
+        if !candidate.exists() {
             warnings.push(format!("Import path '{}' does not exist", import.path));
             continue;
         }
 
-        if candidate_path.is_file() {
-            if is_proto_file(candidate_path) {
-                let canonical = candidate_path.to_path_buf();
-                if seen.insert(canonical.clone()) {
-                    results.push(canonical);
+        if candidate.is_file() {
+            if is_proto_file(candidate) {
+                if seen.insert(candidate.to_path_buf()) {
+                    results.push(candidate.to_path_buf());
                 }
             } else {
                 warnings.push(format!(
@@ -185,16 +324,12 @@ fn discover_proto_files(import_paths: &[ImportPath], warnings: &mut Vec<String>)
         }
 
         let mut found_any = false;
-
-        for entry in WalkDir::new(candidate_path).into_iter().filter_map(|e| e.ok()) {
-            if entry.file_type().is_file() {
-                let path = entry.path();
-                if is_proto_file(path) {
-                    found_any = true;
-                    let cloned = path.to_path_buf();
-                    if seen.insert(cloned.clone()) {
-                        results.push(cloned);
-                    }
+        for entry in WalkDir::new(candidate).into_iter().filter_map(|e| e.ok()) {
+            if entry.file_type().is_file() && is_proto_file(entry.path()) {
+                found_any = true;
+                let p = entry.path().to_path_buf();
+                if seen.insert(p.clone()) {
+                    results.push(p);
                 }
             }
         }
@@ -220,7 +355,6 @@ fn read_proto_files(
     errors: &mut Vec<ProtoParseError>,
 ) -> Vec<(PathBuf, String)> {
     let mut result = Vec::new();
-
     for path in paths {
         match fs::read_to_string(path) {
             Ok(content) => result.push((path.clone(), content)),
@@ -231,7 +365,6 @@ fn read_proto_files(
             }),
         }
     }
-
     result
 }
 
@@ -239,8 +372,7 @@ fn extract_services(
     proto_files: &[(PathBuf, String)],
     warnings: &mut Vec<String>,
 ) -> Vec<Service> {
-    let service_re = Regex::new(r"service\s+(\w+)\s*\{([\s\S]*?)\}")
-        .expect("valid service regex");
+    let service_re = Regex::new(r"service\s+(\w+)\s*\{([\s\S]*?)\}").expect("valid service regex");
     let rpc_re = Regex::new(
         r"rpc\s+(\w+)\s*\(\s*(stream\s+)?([A-Za-z0-9_.]+)\s*\)\s+returns\s*\(\s*(stream\s+)?([A-Za-z0-9_.]+)\s*\)",
     )
@@ -257,30 +389,12 @@ fn extract_services(
                 .map(|m| m.as_str().to_string())
                 .unwrap_or_default();
 
-            let body = service_cap
-                .get(2)
-                .map(|m| m.as_str())
-                .unwrap_or("");
+            let body = service_cap.get(2).map(|m| m.as_str()).unwrap_or("");
 
             let mut methods = Vec::new();
-
             for rpc_cap in rpc_re.captures_iter(body) {
-                let method_name = rpc_cap
-                    .get(1)
-                    .map(|m| m.as_str().to_string())
-                    .unwrap_or_default();
-
                 let is_client_streaming = rpc_cap.get(2).is_some();
-                let input_type = rpc_cap
-                    .get(3)
-                    .map(|m| m.as_str().to_string())
-                    .unwrap_or_default();
                 let is_server_streaming = rpc_cap.get(4).is_some();
-                let output_type = rpc_cap
-                    .get(5)
-                    .map(|m| m.as_str().to_string())
-                    .unwrap_or_default();
-
                 let method_type = match (is_client_streaming, is_server_streaming) {
                     (false, false) => "unary",
                     (false, true) => "server_streaming",
@@ -290,9 +404,9 @@ fn extract_services(
                 .to_string();
 
                 methods.push(Method {
-                    name: method_name,
-                    input_type,
-                    output_type,
+                    name: rpc_cap.get(1).map(|m| m.as_str().to_string()).unwrap_or_default(),
+                    input_type: rpc_cap.get(3).map(|m| m.as_str().to_string()).unwrap_or_default(),
+                    output_type: rpc_cap.get(5).map(|m| m.as_str().to_string()).unwrap_or_default(),
                     is_client_streaming,
                     is_server_streaming,
                     method_type,
@@ -321,311 +435,117 @@ fn extract_services(
 }
 
 fn extract_package(content: &str) -> Option<String> {
-    let package_re = Regex::new(r"package\s+([A-Za-z0-9_.]+)\s*;").ok()?;
-    package_re
-        .captures(content)
+    let re = Regex::new(r"package\s+([A-Za-z0-9_.]+)\s*;").ok()?;
+    re.captures(content)
         .and_then(|cap| cap.get(1))
         .map(|m| m.as_str().to_string())
 }
 
-/// Check if a proto file defines any services
 fn has_service_definition(content: &str) -> bool {
-    let service_re = Regex::new(r"service\s+\w+\s*\{").expect("valid service regex");
-    service_re.is_match(content)
+    let re = Regex::new(r"service\s+\w+\s*\{").expect("valid service regex");
+    re.is_match(content)
 }
 
-fn compile_proto_bundle(
-    proto_files: &[(PathBuf, String)],
-    import_paths: &[ImportPath],
-) -> Result<DescriptorPool, String> {
-    if proto_files.is_empty() {
-        return Err("No proto files available for compilation".to_string());
-    }
+/// Return the path of `file` relative to one of the `roots`, normalising path
+/// separators so the result can be passed to protox as a file name.
+fn relative_to_include_dir(file: &Path, roots: &[PathBuf]) -> Option<String> {
+    let file_str = file.to_string_lossy();
+    let file_norm = file_str.trim_start_matches(r"\\?\");
 
-    let all_imports = extract_all_imports(proto_files);
-    let proto_paths = discover_proto_paths(import_paths, &all_imports);
-
-    // Only compile files that define services; imports are pulled in transitively
-    let service_files: Vec<&(PathBuf, String)> = proto_files
-        .iter()
-        .filter(|(_, content)| has_service_definition(content))
-        .collect();
-
-    if service_files.is_empty() {
-        return Err("No proto files with service definitions found".to_string());
-    }
-
-    let relative_service_files: Vec<String> = service_files
-        .iter()
-        .map(|(path, _)| {
-            find_relative_proto_path_from_roots(path, &proto_paths)
-                .unwrap_or_else(|| path.to_string_lossy().to_string())
-                .replace('\\', "/")
-        })
-        .collect();
-
-    let fds = protox::compile(&relative_service_files, &proto_paths)
-        .map_err(|e| format!("Proto compilation failed: {}", e))?;
-
-    let bytes = fds.encode_to_vec();
-    DescriptorPool::decode(bytes.as_slice())
-        .map_err(|e| format!("Failed to decode descriptor set: {}", e))
-}
-
-/// Discover all proto_paths needed to resolve imports
-/// 
-/// This handles multiple import resolution scenarios:
-/// 1. Standard imports relative to configured import path
-/// 2. Prefixed imports (e.g., "parent/models/user.proto" when import path ends with "parent")
-/// 3. Mixed imports where some files use prefix and others don't (e.g., "google/type/money.proto")
-///
-/// For case 3, we need to add subdirectories that contain the non-prefixed imports.
-fn discover_proto_paths(
-    import_paths: &[ImportPath],
-    all_imports: &[String],
-) -> Vec<PathBuf> {
-    let mut proto_paths: Vec<PathBuf> = Vec::new();
-    let mut seen: HashSet<String> = HashSet::new();
-
-    // Helper to normalize path for comparison (avoid Windows \\?\ issues)
-    let normalize_path = |p: &Path| -> String {
-        p.to_string_lossy()
-            .trim_start_matches(r"\\?\")
-            .replace('\\', "/")
-            .to_lowercase()
-    };
-
-    // First pass: add all configured import paths
-    for import in import_paths {
-        let import_path = Path::new(&import.path);
-        if import_path.is_dir() {
-            let normalized = normalize_path(import_path);
-            if seen.insert(normalized) {
-                proto_paths.push(import_path.to_path_buf());
-            }
-        } else if let Some(parent) = import_path.parent() {
-            if parent.exists() {
-                let normalized = normalize_path(parent);
-                if seen.insert(normalized) {
-                    proto_paths.push(parent.to_path_buf());
-                }
-            }
-        }
-    }
-
-    // Second pass: for each import, try to find where it actually exists
-    // This handles cases where imports might resolve from subdirectories
-    for import in import_paths {
-        let import_path = Path::new(&import.path);
-        if !import_path.is_dir() {
-            continue;
-        }
-
-        for import_stmt in all_imports {
-            // Check if this import resolves directly from the import path
-            let direct_path = import_path.join(import_stmt);
-            if direct_path.exists() {
-                continue; // Already resolvable, no need to add more paths
-            }
-
-            // Try to find the import in subdirectories
-            // e.g., if import is "google/type/money.proto" and it exists at "proto/parent/google/type/money.proto"
-            // we need to add "proto/parent" as a proto_path
-            if let Some(found_path) = find_import_in_subdirs(import_path, import_stmt) {
-                let normalized = normalize_path(&found_path);
-                if seen.insert(normalized) {
-                    eprintln!("[proto_parser] Added subdirectory for import '{}': {}", 
-                        import_stmt, found_path.display());
-                    proto_paths.push(found_path);
-                }
-            }
-        }
-    }
-
-    proto_paths
-}
-
-/// Search for an import file in subdirectories of the given path
-/// Returns the subdirectory path that should be added as proto_path
-fn find_import_in_subdirs(base_path: &Path, import_stmt: &str) -> Option<PathBuf> {
-    // Get the first component of the import (e.g., "google" from "google/type/money.proto")
-    let import_first = import_stmt.split('/').next()?;
-    
-    // Look for directories that contain this import
-    for entry in WalkDir::new(base_path)
-        .max_depth(3) // Don't go too deep
-        .into_iter()
-        .filter_map(|e| e.ok())
-    {
-        if entry.file_type().is_dir() {
-            // Check if this directory name matches the first component of the import
-            if entry.file_name().to_str() == Some(import_first) {
-                // Verify the full import path exists from the parent
-                let potential_proto_path = entry.path().parent()?;
-                let full_import_path = potential_proto_path.join(import_stmt);
-                if full_import_path.exists() {
-                    return Some(potential_proto_path.to_path_buf());
-                }
-            }
-        }
-    }
-    
-    None
-}
-
-/// Extract all import statements from proto files
-fn extract_all_imports(proto_files: &[(PathBuf, String)]) -> Vec<String> {
-    let import_re = Regex::new(r#"import\s+"([^"]+)";"#).expect("valid import regex");
-    let mut imports = Vec::new();
-    
-    for (_path, content) in proto_files {
-        for cap in import_re.captures_iter(content) {
-            if let Some(import_path) = cap.get(1) {
-                imports.push(import_path.as_str().to_string());
-            }
-        }
-    }
-    
-    imports.sort();
-    imports.dedup();
-    imports
-}
-
-/// Find the relative path of a proto file from one of the proto_path roots
-fn find_relative_proto_path_from_roots(proto_path: &Path, roots: &[PathBuf]) -> Option<String> {
-    // Normalize the proto path (handle Windows \\?\ prefix)
-    let proto_str = proto_path.to_string_lossy();
-    let proto_normalized = proto_str.trim_start_matches(r"\\?\");
-    
     for root in roots {
-        // Normalize the root path as well
         let root_str = root.to_string_lossy();
-        let root_normalized = root_str.trim_start_matches(r"\\?\");
-        
-        // Try to find the relative path by string comparison
-        if proto_normalized.starts_with(root_normalized) {
-            let relative = proto_normalized
-                .strip_prefix(root_normalized)
-                .unwrap_or(proto_normalized)
-                .trim_start_matches(['/', '\\']);
-            
-            if !relative.is_empty() {
-                return Some(relative.to_string());
+        let root_norm = root_str.trim_start_matches(r"\\?\");
+
+        if let Some(rel) = file_norm.strip_prefix(root_norm) {
+            let trimmed = rel.trim_start_matches(['/', '\\']);
+            if !trimmed.is_empty() {
+                return Some(trimmed.replace('\\', "/"));
             }
         }
-        
-        // Also try the standard strip_prefix
-        if let Ok(relative) = proto_path.strip_prefix(root) {
-            if !relative.as_os_str().is_empty() {
-                return Some(relative.to_string_lossy().to_string());
+
+        if let Ok(rel) = file.strip_prefix(root) {
+            let s = rel.to_string_lossy();
+            if !s.is_empty() {
+                return Some(s.replace('\\', "/"));
             }
         }
     }
     None
 }
-
 
 fn enrich_with_samples(
     services: &mut [Service],
-    descriptor_pool: &DescriptorPool,
+    pool: &DescriptorPool,
     warnings: &mut Vec<String>,
 ) {
-    let all_message_names: Vec<String> = descriptor_pool
-        .all_messages()
-        .map(|m| m.full_name().to_string())
-        .collect();
-
-    if all_message_names.is_empty() {
-        warnings.push("No message types found in descriptor pool".to_string());
-    }
-
     for service in services.iter_mut() {
         for method in service.methods.iter_mut() {
             let descriptor = find_message_descriptor(
-                descriptor_pool,
+                pool,
                 service.package_name.as_deref(),
                 &method.input_type,
             );
 
-            let Some(message_desc) = descriptor else {
-                warnings.push(format!(
-                    "Descriptor not found for '{}' (service package: {:?})",
-                    method.input_type, service.package_name,
-                ));
-                continue;
-            };
-
-            let sample_value = generate_sample_json(message_desc, 0);
-            match serde_json::to_string_pretty(&sample_value) {
-                Ok(sample_json) => {
-                    method.sample_request = Some(sample_json);
+            match descriptor {
+                Some(msg_desc) => {
+                    match serde_json::to_string_pretty(&generate_sample_json(msg_desc, 0)) {
+                        Ok(json) => method.sample_request = Some(json),
+                        Err(e) => warnings.push(format!(
+                            "Failed to serialize sample for '{}': {}",
+                            method.input_type, e
+                        )),
+                    }
                 }
-                Err(err) => warnings.push(format!(
-                    "Failed to serialize sample for message '{}': {}",
-                    method.input_type, err
+                None => warnings.push(format!(
+                    "Descriptor not found for '{}' (service package: {:?})",
+                    method.input_type, service.package_name
                 )),
             }
         }
     }
 }
 
-fn find_message_descriptor<'a>(
-    pool: &'a DescriptorPool,
+fn find_message_descriptor(
+    pool: &DescriptorPool,
     package: Option<&str>,
     type_name: &str,
 ) -> Option<MessageDescriptor> {
     let trimmed = type_name.trim_start_matches('.');
 
-    // First try exact match with full name
-    for message in pool.all_messages() {
-        if message.full_name() == trimmed {
-            return Some(message);
-        }
+    // Exact full-name match
+    if let Some(m) = pool.get_message_by_name(trimmed) {
+        return Some(m);
     }
 
-    // Try with service package prefix
+    // With service package prefix
     if let Some(pkg) = package {
         let qualified = format!("{}.{}", pkg, trimmed);
-        for message in pool.all_messages() {
-            if message.full_name() == qualified {
-                return Some(message);
-            }
+        if let Some(m) = pool.get_message_by_name(&qualified) {
+            return Some(m);
         }
     }
 
-    // Try matching just the type name part for cross-package references
-    // e.g., "models.User" should match message with full_name "models.User"
-    // This handles cases where input_type already includes package prefix
+    // Suffix match for cross-package references
     if trimmed.contains('.') {
-        // The type_name already has a package prefix (like "models.User")
-        // It might be relative or absolute
         for message in pool.all_messages() {
-            // Try exact match
-            if message.full_name() == trimmed {
-                return Some(message);
-            }
-            // Try suffix match (in case it's a relative reference)
             if message.full_name().ends_with(&format!(".{}", trimmed)) {
                 return Some(message);
             }
         }
     }
 
-    // Fallback: simple name match (only if unambiguous)
-    let simple_name = trimmed.split('.').last().unwrap_or(trimmed);
-    let mut simple_match = None;
-
+    // Unambiguous simple-name match
+    let simple = trimmed.split('.').last().unwrap_or(trimmed);
+    let mut found = None;
     for message in pool.all_messages() {
-        if message.name() == simple_name {
-            if simple_match.is_some() {
-                // Ambiguous - multiple messages with same simple name
-                return None;
+        if message.name() == simple {
+            if found.is_some() {
+                return None; // ambiguous
             }
-            simple_match = Some(message);
+            found = Some(message);
         }
     }
-
-    simple_match
+    found
 }
 
 fn generate_sample_json(message: MessageDescriptor, depth: usize) -> Value {
@@ -634,8 +554,15 @@ fn generate_sample_json(message: MessageDescriptor, depth: usize) -> Value {
     }
 
     let mut object = Map::new();
+    let mut seen_oneofs: HashSet<String> = HashSet::new();
 
     for field in message.fields() {
+        // For oneof groups emit only the first variant so the sample is valid proto3 JSON
+        if let Some(oneof) = field.containing_oneof() {
+            if !seen_oneofs.insert(oneof.name().to_string()) {
+                continue;
+            }
+        }
         object.insert(
             field.json_name().to_string(),
             default_value_for_field(&field, depth + 1),
@@ -649,15 +576,15 @@ fn default_value_for_field(field: &FieldDescriptor, depth: usize) -> Value {
     if field.is_list() {
         return Value::Array(Vec::new());
     }
-
     if field.is_map() {
         return Value::Object(Map::new());
     }
 
     use prost_reflect::Kind;
-
     match field.kind() {
-        Kind::Double | Kind::Float => Value::Number(serde_json::Number::from_f64(0.0).unwrap()),
+        Kind::Double | Kind::Float => {
+            Value::Number(serde_json::Number::from_f64(0.0).unwrap())
+        }
         Kind::Int32
         | Kind::Int64
         | Kind::Uint32
@@ -670,48 +597,149 @@ fn default_value_for_field(field: &FieldDescriptor, depth: usize) -> Value {
         | Kind::Sfixed64 => Value::Number(serde_json::Number::from(0)),
         Kind::Bool => Value::Bool(false),
         Kind::String => Value::String(String::new()),
-        Kind::Bytes => Value::String("base64_encoded_bytes".to_string()),
+        Kind::Bytes => Value::String(String::new()),
         Kind::Enum(enum_desc) => enum_desc
             .values()
             .next()
-            .map(|value| Value::String(value.name().to_string()))
+            .map(|v| Value::String(v.name().to_string()))
             .unwrap_or_else(|| Value::Number(serde_json::Number::from(0))),
-        Kind::Message(message_desc) => generate_sample_json(message_desc, depth),
+        Kind::Message(msg_desc) => well_known_sample(&msg_desc)
+            .unwrap_or_else(|| generate_sample_json(msg_desc, depth)),
     }
 }
 
-/// Compile proto files from import paths and return descriptor pool
-/// This is used when making gRPC calls with import paths instead of proto content
-pub fn compile_proto_from_paths(import_paths: Vec<ImportPath>) -> Result<DescriptorPool, String> {
-    let mut warnings = Vec::new();
-    
-    let enabled_imports: Vec<ImportPath> = import_paths
-        .into_iter()
-        .filter(|p| p.enabled)
-        .collect();
-
-    if enabled_imports.is_empty() {
-        return Err("No enabled import paths".to_string());
+/// Return a correctly-shaped JSON value for proto well-known types.
+/// Returns None for ordinary messages so the caller recurses normally.
+fn well_known_sample(msg: &MessageDescriptor) -> Option<Value> {
+    match msg.full_name() {
+        "google.protobuf.Timestamp" => Some(Value::String("1970-01-01T00:00:00Z".into())),
+        "google.protobuf.Duration" => Some(Value::String("0s".into())),
+        "google.protobuf.Any" => Some(serde_json::json!({
+            "@type": "type.googleapis.com/package.MessageName"
+        })),
+        "google.protobuf.FieldMask" => Some(Value::String("field1,field2".into())),
+        "google.protobuf.Struct" => Some(Value::Object(Map::new())),
+        "google.protobuf.Value" => Some(Value::Null),
+        "google.protobuf.ListValue" => Some(Value::Array(vec![])),
+        "google.protobuf.StringValue" | "google.protobuf.BytesValue" => {
+            Some(Value::String(String::new()))
+        }
+        "google.protobuf.Int32Value"
+        | "google.protobuf.Int64Value"
+        | "google.protobuf.UInt32Value"
+        | "google.protobuf.UInt64Value" => Some(Value::Number(serde_json::Number::from(0))),
+        "google.protobuf.FloatValue" | "google.protobuf.DoubleValue" => {
+            Some(Value::Number(serde_json::Number::from_f64(0.0).unwrap()))
+        }
+        "google.protobuf.BoolValue" => Some(Value::Bool(false)),
+        _ => None,
     }
-
-    let proto_paths = discover_proto_files(&enabled_imports, &mut warnings);
-
-    if proto_paths.is_empty() {
-        return Err("No .proto files found in import paths".to_string());
-    }
-
-    let mut errors = Vec::new();
-    let proto_files = read_proto_files(&proto_paths, &mut errors);
-
-    if !errors.is_empty() {
-        return Err(format!("Failed to read proto files: {:?}", errors));
-    }
-
-    compile_proto_bundle(&proto_files, &enabled_imports)
 }
 
-// Proto file parsing with import resolution
-// Multi-phase parsing: discovery → dependency graph → validation → topological parse
+/// Regex-based fallback: generate stub samples for methods that still have none.
+/// Less accurate than descriptor-driven generation but works when protox compilation fails.
+fn generate_stub_samples(
+    services: &mut [Service],
+    proto_files: &[(PathBuf, String)],
+    warnings: &mut Vec<String>,
+) {
+    let field_re = Regex::new(
+        r"(?:repeated\s+|optional\s+)?(?:double|float|int32|int64|uint32|uint64|sint32|sint64|fixed32|fixed64|sfixed32|sfixed64|bool|string|bytes|[A-Za-z0-9_.]+)\s+(\w+)\s*=",
+    )
+    .expect("valid field regex");
+
+    let mut message_fields: std::collections::HashMap<String, Vec<String>> =
+        std::collections::HashMap::new();
+    for (_path, content) in proto_files {
+        for (msg_name, body) in extract_message_bodies(content) {
+            let fields: Vec<String> = field_re
+                .captures_iter(&body)
+                .filter_map(|fc| fc.get(1).map(|m| m.as_str().to_string()))
+                .collect();
+            message_fields.entry(msg_name).or_default().extend(fields);
+        }
+    }
+
+    let mut stub_count = 0;
+    for service in services.iter_mut() {
+        for method in service.methods.iter_mut() {
+            if method.sample_request.is_some() {
+                continue;
+            }
+            let simple = method.input_type.split('.').last().unwrap_or(&method.input_type);
+            let mut obj = Map::new();
+            if let Some(fields) = message_fields.get(simple) {
+                for field_name in fields {
+                    obj.insert(to_camel_case(field_name), Value::String(String::new()));
+                }
+            }
+            if let Ok(json) = serde_json::to_string_pretty(&Value::Object(obj)) {
+                method.sample_request = Some(json);
+                stub_count += 1;
+            }
+        }
+    }
+
+    if stub_count > 0 {
+        warnings.push(format!(
+            "{} method(s) used regex-based stub samples (protox compilation unavailable)",
+            stub_count
+        ));
+    }
+}
+
+/// Extract all top-level message bodies from a proto file, handling nested blocks
+/// (oneof, map entries, nested messages) correctly by counting braces.
+fn extract_message_bodies(content: &str) -> Vec<(String, String)> {
+    let message_start_re =
+        Regex::new(r"message\s+(\w+)\s*\{").expect("valid message start regex");
+    let mut result = Vec::new();
+
+    for cap in message_start_re.captures_iter(content) {
+        let name = cap.get(1).unwrap().as_str().to_string();
+        let body_start = cap.get(0).unwrap().end(); // position after the opening '{'
+
+        let mut depth: i32 = 1;
+        let mut body_end = body_start;
+        for ch in content[body_start..].chars() {
+            match ch {
+                '{' => depth += 1,
+                '}' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        break;
+                    }
+                }
+                _ => {}
+            }
+            body_end += ch.len_utf8();
+        }
+
+        result.push((name, content[body_start..body_end].to_string()));
+    }
+
+    result
+}
+
+fn to_camel_case(s: &str) -> String {
+    let mut result = String::new();
+    let mut next_upper = false;
+    for ch in s.chars() {
+        if ch == '_' {
+            next_upper = true;
+        } else if next_upper {
+            result.extend(ch.to_uppercase());
+            next_upper = false;
+        } else {
+            result.push(ch);
+        }
+    }
+    result
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
 
 #[cfg(test)]
 mod tests {
@@ -726,31 +754,23 @@ mod tests {
             enabled: true,
         }];
 
-        let result = parse_proto_files(import_paths);
+        let (result, _pool) = parse_proto_files(import_paths);
 
         println!("Success: {}", result.success);
-        println!("\nERRORS ({}):", result.errors.len());
         for err in &result.errors {
-            println!("  [{}] {}", err.file, err.message);
-            if let Some(s) = &err.suggestion {
-                println!("    Suggestion: {}", s);
-            }
+            println!("  ERROR [{}] {}", err.file, err.message);
         }
-        println!("\nWARNINGS ({}):", result.warnings.len());
         for w in &result.warnings {
-            println!("  {}", w);
+            println!("  WARN {}", w);
         }
-        println!("\nSERVICES ({}):", result.services.len());
         for svc in &result.services {
             println!("  Service: {} (package: {:?})", svc.name, svc.package_name);
             for method in &svc.methods {
-                let has_sample = method.sample_request.is_some();
-                let sample_preview = method.sample_request.as_ref()
-                    .map(|s| if s.len() > 80 { format!("{}...", &s[..80]) } else { s.clone() })
-                    .unwrap_or_else(|| "NONE".to_string());
                 println!(
-                    "    {} ({}) input={} | sample={}  preview={}",
-                    method.name, method.method_type, method.input_type, has_sample, sample_preview
+                    "    {} ({}) sample={}",
+                    method.name,
+                    method.method_type,
+                    method.sample_request.is_some()
                 );
             }
         }
@@ -758,20 +778,96 @@ mod tests {
         assert!(result.success, "Parsing should succeed");
         assert!(!result.services.is_empty(), "Should find services");
 
-        // Check that ALL methods have sample requests
-        let mut missing_samples = Vec::new();
-        for svc in &result.services {
-            for method in &svc.methods {
-                if method.sample_request.is_none() {
-                    missing_samples.push(format!("{}.{} (input: {})", svc.name, method.name, method.input_type));
-                }
-            }
-        }
+        let missing: Vec<_> = result
+            .services
+            .iter()
+            .flat_map(|s| {
+                s.methods.iter().filter(|m| m.sample_request.is_none()).map(move |m| {
+                    format!("{}.{} (input: {})", s.name, m.name, m.input_type)
+                })
+            })
+            .collect();
+        assert!(missing.is_empty(), "Methods missing samples:\n  {}", missing.join("\n  "));
+    }
+
+    #[test]
+    fn test_oneof_sample_has_single_variant() {
+        let proto = r#"
+syntax = "proto3";
+package test;
+
+service Svc { rpc Do (Req) returns (Req); }
+
+message Req {
+  oneof payload {
+    string text = 1;
+    int32 number = 2;
+  }
+  string name = 3;
+}
+"#;
+        let pool = compile_single_file(proto).expect("compile should succeed");
+        let msg = pool.get_message_by_name("test.Req").expect("Req should exist");
+        let sample = generate_sample_json(msg, 0);
+        let obj = sample.as_object().expect("should be object");
+
+        // "name" must be present; exactly one of text/number should appear (not both)
+        assert!(obj.contains_key("name"), "non-oneof field should be present");
+        let has_text = obj.contains_key("text");
+        let has_number = obj.contains_key("number");
         assert!(
-            missing_samples.is_empty(),
-            "Methods missing sample requests:\n  {}",
-            missing_samples.join("\n  ")
+            has_text ^ has_number,
+            "exactly one oneof variant should appear, got text={} number={}",
+            has_text,
+            has_number
         );
     }
 
+    #[test]
+    fn test_stub_fallback_generates_samples() {
+        let proto_content = r#"
+syntax = "proto3";
+package test;
+
+service TestService {
+  rpc DoSomething (DoRequest) returns (DoResponse);
+}
+
+message DoRequest {
+  string name = 1;
+  int32 count = 2;
+  bool active = 3;
+}
+
+message DoResponse { string result = 1; }
+"#;
+        let proto_files = vec![(PathBuf::from("test.proto"), proto_content.to_string())];
+        let mut services = vec![Service {
+            name: "TestService".to_string(),
+            package_name: Some("test".to_string()),
+            methods: vec![Method {
+                name: "DoSomething".to_string(),
+                input_type: "DoRequest".to_string(),
+                output_type: "DoResponse".to_string(),
+                is_client_streaming: false,
+                is_server_streaming: false,
+                method_type: "unary".to_string(),
+                sample_request: None,
+            }],
+            source_proto: None,
+        }];
+
+        let mut warnings = Vec::new();
+        generate_stub_samples(&mut services, &proto_files, &mut warnings);
+
+        let sample = services[0].methods[0]
+            .sample_request
+            .as_ref()
+            .expect("stub should generate a sample");
+        let parsed: Value = serde_json::from_str(sample).expect("valid JSON");
+        let obj = parsed.as_object().expect("object");
+        assert!(obj.contains_key("name"));
+        assert!(obj.contains_key("count"));
+        assert!(obj.contains_key("active"));
+    }
 }
